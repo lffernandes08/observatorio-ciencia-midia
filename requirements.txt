@@ -1,0 +1,9 @@
+selenium
+news-please
+pandas
+streamlit
+plotly
+nltk
+networkx
+python-louvain
+openai
