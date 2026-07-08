@@ -1152,6 +1152,207 @@ if secao_selecionada == "Temas":
 
         st.divider()
 
+        st.subheader("📈 Termos em ascensão")
+        st.caption(
+            "Diferente do ranking acima (que mostra o que já está em alta), esta "
+            "seção compara a taxa de menções de cada palavra-chave na janela mais "
+            "recente do período filtrado com a taxa no restante do período — "
+            "sinalizando temas que estão acelerando, mesmo que ainda não tenham "
+            "volume alto o suficiente para aparecer no topo do ranking geral. "
+            "O ranking usa um teste estatístico de significância (não percentual "
+            "bruto), para não confundir ruído de amostra pequena (ex: 1 menção "
+            "virar 2, um salto de \"+100%\" que não significa nada) com um "
+            "aumento genuíno."
+        )
+
+        col_janela, col_topn, col_sensibilidade = st.columns(3)
+        with col_janela:
+            dias_janela_recente = st.slider(
+                "Janela recente (dias)",
+                min_value=7, max_value=30, value=14,
+                key="dias_janela_ascensao"
+            )
+        with col_topn:
+            top_n_ascensao = st.slider(
+                "Quantidade de termos em destaque",
+                min_value=5, max_value=20, value=10,
+                key="top_n_ascensao"
+            )
+        with col_sensibilidade:
+            sensibilidade_ascensao = st.select_slider(
+                "Sensibilidade do sinal",
+                options=["Alta confiança", "Confiança padrão", "Mais permissivo"],
+                value="Confiança padrão",
+                key="sensibilidade_ascensao"
+            )
+
+        LIMIAR_Z = {
+            "Alta confiança": 2.33,     # ~99% de confiança unicaudal
+            "Confiança padrão": 1.64,   # ~95% de confiança unicaudal
+            "Mais permissivo": 1.28,    # ~90% de confiança unicaudal
+        }[sensibilidade_ascensao]
+
+        @st.cache_data
+        def detectar_termos_ascensao(chave_cache, dias_recente_param, top_n_param, limiar_z, min_ocorrencias=3):
+            """Compara, para cada palavra-chave, a taxa de menções (por dia) na
+            janela recente do período filtrado com a taxa no restante do
+            período (linha de base), usando um teste de significância para
+            duas taxas de Poisson independentes (aproximação de Wald):
+
+                z = (taxa_recente - taxa_base) / sqrt(taxa_recente/dias_recente + taxa_base/dias_base)
+
+            Só termos com |z| acima do limiar escolhido (equivalente a um
+            nível de confiança) são sinalizados como 'em ascensão'. Isso
+            penaliza naturalmente contagens pequenas (que produzem z baixo,
+            mesmo com percentual de variação alto) e recompensa saltos
+            genuínos, mesmo quando o percentual parece modesto."""
+            kw_com_data = df.merge(
+                df_keywords[["url", "palavras_chave_lista"]],
+                left_on="URL", right_on="url", how="inner"
+            )
+
+            if kw_com_data.empty:
+                return {"status": "sem_dados"}
+
+            data_min = kw_com_data["date_dt"].min()
+            data_max = kw_com_data["date_dt"].max()
+            dias_totais = (data_max - data_min).days + 1
+
+            if dias_totais < dias_recente_param * 2:
+                return {"status": "periodo_curto", "dias_totais": dias_totais}
+
+            corte_recente = data_max - pd.Timedelta(days=dias_recente_param - 1)
+
+            recente = kw_com_data[kw_com_data["date_dt"] >= corte_recente]
+            base = kw_com_data[kw_com_data["date_dt"] < corte_recente]
+
+            dias_recente_real = (data_max - corte_recente).days + 1
+            dias_base_real = (corte_recente - data_min).days
+
+            if dias_base_real <= 0:
+                return {"status": "periodo_curto", "dias_totais": dias_totais}
+
+            termos_recente = Counter(
+                t for lista in recente["palavras_chave_lista"] for t in lista if t
+            )
+            termos_base = Counter(
+                t for lista in base["palavras_chave_lista"] for t in lista if t
+            )
+
+            todos_termos = set(termos_recente) | set(termos_base)
+            registros = []
+
+            for termo in todos_termos:
+                n_recente = termos_recente.get(termo, 0)
+                n_base = termos_base.get(termo, 0)
+
+                if (n_recente + n_base) < min_ocorrencias:
+                    continue
+
+                taxa_recente = n_recente / dias_recente_real
+                taxa_base = n_base / dias_base_real
+
+                if taxa_recente <= taxa_base:
+                    continue  # só nos interessa quem está subindo de verdade
+
+                variancia = (taxa_recente / dias_recente_real) + (taxa_base / dias_base_real)
+                z_score = (taxa_recente - taxa_base) / math.sqrt(variancia) if variancia > 0 else 0.0
+
+                if z_score < limiar_z:
+                    continue  # sinal fraco demais para distinguir de ruído de amostra
+
+                eh_novo = n_base == 0
+                variacao_pct = (
+                    ((taxa_recente - taxa_base) / taxa_base) * 100
+                    if taxa_base > 0 else None
+                )
+
+                registros.append({
+                    "Termo": termo,
+                    "Menções (janela recente)": n_recente,
+                    "Menções (linha de base)": n_base,
+                    "Taxa recente (m/dia)": round(taxa_recente, 2),
+                    "Taxa de base (m/dia)": round(taxa_base, 2),
+                    "Variação": "novo" if eh_novo else f"+{variacao_pct:.0f}%",
+                    "Força do sinal (z)": round(z_score, 2),
+                })
+
+            if not registros:
+                return {"status": "sem_ascensao"}
+
+            df_ascensao = pd.DataFrame(registros).sort_values(
+                by="Força do sinal (z)",
+                ascending=False
+            ).head(top_n_param)
+
+            return {
+                "status": "ok",
+                "tabela": df_ascensao,
+                "dias_recente": dias_recente_real,
+                "dias_base": dias_base_real,
+                "corte_recente": corte_recente,
+            }
+
+        chave_cache_ascensao = (
+            len(df), df["date_dt"].min(), df["date_dt"].max(),
+            len(df_keywords), dias_janela_recente
+        )
+        resultado_ascensao = detectar_termos_ascensao(
+            chave_cache_ascensao, dias_janela_recente, top_n_ascensao, LIMIAR_Z
+        )
+
+        if resultado_ascensao["status"] == "sem_dados":
+            st.info(
+                "Nenhuma matéria do período/busca filtrados possui palavras-chave "
+                "extraídas ainda."
+            )
+        elif resultado_ascensao["status"] == "periodo_curto":
+            st.info(
+                f"O período filtrado tem {resultado_ascensao['dias_totais']} dia(s), "
+                f"curto demais para comparar com uma janela recente de "
+                f"{dias_janela_recente} dias. Amplie o período filtrado na barra "
+                "lateral ou reduza a janela recente."
+            )
+        elif resultado_ascensao["status"] == "sem_ascensao":
+            st.info(
+                "Nenhum termo passou no teste de significância deste filtro — "
+                "sem sinais de ascensão estatisticamente distinguíveis de ruído. "
+                "Tente \"Mais permissivo\" na sensibilidade, ou amplie o período."
+            )
+        else:
+            tabela_ascensao = resultado_ascensao["tabela"]
+
+            chips_ascensao_html = "".join(
+                '<span class="chip-nuvem {tom}">{termo} <b>({variacao})</b></span>'.format(
+                    tom="tom-b" if row["Variação"] == "novo" else "tom-a",
+                    termo=html.escape(str(row["Termo"])),
+                    variacao=html.escape(str(row["Variação"]))
+                )
+                for _, row in tabela_ascensao.iterrows()
+            )
+
+            st.markdown(
+                f'<div class="nuvem-container">{chips_ascensao_html}</div>',
+                unsafe_allow_html=True
+            )
+
+            st.caption(
+                f"Janela recente: últimos {resultado_ascensao['dias_recente']} dia(s) "
+                f"(desde {resultado_ascensao['corte_recente'].strftime('%d/%m/%Y')}) · "
+                f"linha de base: os {resultado_ascensao['dias_base']} dia(s) anteriores "
+                f"do período filtrado · limiar de significância: z ≥ {LIMIAR_Z:.2f} "
+                f"({sensibilidade_ascensao.lower()}). \"novo\" = termo que não "
+                "aparecia na linha de base."
+            )
+
+            with st.expander("Ver como tabela (inclui força do sinal)"):
+                st.dataframe(
+                    tabela_ascensao.sort_values("Força do sinal (z)", ascending=False),
+                    use_container_width=True, hide_index=True
+                )
+
+        st.divider()
+
     else:
         st.info(
             "O arquivo materias_keywords.csv ainda não foi encontrado. "
