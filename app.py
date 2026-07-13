@@ -390,7 +390,8 @@ def agrupar_por_escala(df, escala, coluna_valor=None):
     resultado["Período"] = resultado[col_rotulo]
     return resultado
 
-
+import os
+st.write("🔍 Arquivos na pasta do app:", os.listdir("."))
 df_original = carregar_dados()
 df = df_original.copy()
 
