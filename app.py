@@ -391,7 +391,20 @@ def agrupar_por_escala(df, escala, coluna_valor=None):
     return resultado
 
 import os
+import pandas as pd
+
 st.write("🔍 Arquivos na pasta do app:", os.listdir("."))
+
+if os.path.exists("cnn_brasil.csv"):
+    tamanho = os.path.getsize("cnn_brasil.csv")
+    st.write(f"🔍 cnn_brasil.csv: {tamanho} bytes")
+
+    df_teste = pd.read_csv("cnn_brasil.csv", encoding="utf-8-sig")
+    st.write(f"🔍 Linhas: {len(df_teste)} | Colunas: {list(df_teste.columns)}")
+
+    if len(df_teste) > 0:
+        st.write("🔍 Amostra de datas (coluna 'date'):", df_teste["date"].head(5).tolist())
+        st.write("🔍 Amostra de veiculo:", df_teste["veiculo"].head(5).tolist() if "veiculo" in df_teste.columns else "SEM COLUNA VEICULO")
 df_original = carregar_dados()
 df = df_original.copy()
 
