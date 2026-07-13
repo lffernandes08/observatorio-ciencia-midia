@@ -4,7 +4,7 @@ import time
 import pandas as pd
 from openai import OpenAI
 
-ARQUIVO_ENTRADA = "folha.csv"
+ARQUIVOS_FONTES = ["folha.csv", "cnn_brasil.csv", "bbc_brasil.csv"]
 ARQUIVO_SAIDA = "materias_keywords.csv"
 MODELO = "gpt-4o-mini"
 INTERVALO_ENTRE_CHAMADAS = 1
@@ -12,6 +12,29 @@ INTERVALO_ENTRE_CHAMADAS = 1
 COLUNAS_SAIDA = ["date", "ano", "section", "title", "url", "palavras_chave"]
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+
+def carregar_corpus():
+    """Carrega e combina todas as fontes de matérias disponíveis (Folha,
+    CNN Brasil, e outras que forem adicionadas depois). Fontes ausentes
+    são ignoradas silenciosamente — não é erro não ter todas."""
+    dataframes = []
+
+    for caminho in ARQUIVOS_FONTES:
+        if not os.path.exists(caminho):
+            continue
+        try:
+            df_fonte = pd.read_csv(caminho, encoding="utf-8-sig")
+            dataframes.append(df_fonte)
+        except Exception as e:
+            print(f"Aviso: erro ao ler {caminho}, ignorando esta fonte: {e}")
+
+    if not dataframes:
+        raise FileNotFoundError(
+            f"Nenhuma fonte de dados encontrada (procurado: {', '.join(ARQUIVOS_FONTES)})."
+        )
+
+    return pd.concat(dataframes, ignore_index=True)
 
 
 def extrair_json(texto):
@@ -88,7 +111,7 @@ def main():
     if not os.getenv("OPENAI_API_KEY"):
         raise ValueError("Configure OPENAI_API_KEY.")
 
-    df = pd.read_csv(ARQUIVO_ENTRADA, encoding="utf-8-sig")
+    df = carregar_corpus()
 
     df["date_dt"] = pd.to_datetime(
         df["date"],

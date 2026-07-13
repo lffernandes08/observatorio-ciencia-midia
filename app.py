@@ -101,6 +101,7 @@ def formatar_autor(valor):
 ARQUIVOS_FONTES = [
     ("folha.csv", "Folha de S.Paulo"),
     ("cnn_brasil.csv", "CNN Brasil"),
+    ("bbc_brasil.csv", "BBC News Brasil"),
 ]
 
 

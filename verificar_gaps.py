@@ -17,6 +17,7 @@ import pandas as pd
 ARQUIVOS_FONTES = [
     ("folha.csv", "Folha de S.Paulo"),
     ("cnn_brasil.csv", "CNN Brasil"),
+    ("bbc_brasil.csv", "BBC News Brasil"),
 ]
 
 
@@ -67,15 +68,17 @@ def agrupar_em_intervalos(dias_faltando):
 
 def sugerir_comando(arquivo, inicio, fim):
     """Cada scraper tem uma forma diferente de pedir um intervalo
-    específico — a Folha aceita --ini/--fim diretamente; a CNN Brasil só
-    tem --historico-dias (contado a partir de hoje), então convertemos."""
+    específico — a Folha aceita --ini/--fim diretamente; CNN Brasil e BBC
+    Brasil só têm --historico-dias (contado a partir de hoje), então
+    convertemos."""
     if arquivo == "folha.csv":
         return f"python main.py --ini {inicio.strftime('%d/%m/%Y')} --fim {fim.strftime('%d/%m/%Y')}"
 
-    if arquivo == "cnn_brasil.csv":
+    if arquivo in ("cnn_brasil.csv", "bbc_brasil.csv"):
+        script = "cnn_brasil.py" if arquivo == "cnn_brasil.csv" else "bbc_brasil.py"
         dias_ate_o_inicio_do_gap = (datetime.now() - inicio).days
         return (
-            f"python cnn_brasil.py --historico-dias {dias_ate_o_inicio_do_gap} "
+            f"python {script} --historico-dias {dias_ate_o_inicio_do_gap} "
             "(cobre o gap, mas também revarre dias já coletados — não tem "
             "problema, são ignorados na extração por já existirem no CSV)"
         )
