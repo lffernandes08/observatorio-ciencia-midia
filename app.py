@@ -391,10 +391,6 @@ def agrupar_por_escala(df, escala, coluna_valor=None):
     return resultado
 
 df_original = carregar_dados()
-st.write("🔍 Veículos em df_original:", df_original["Veículo"].unique().tolist())
-st.write("🔍 Linhas por veículo:", df_original["Veículo"].value_counts().to_dict())
-veiculos_teste = sorted(df_original["Veículo"].unique())
-st.write("🔍 len(veiculos_disponiveis) > 1 ?", len(veiculos_teste) > 1)
 df = df_original.copy()
 
 
