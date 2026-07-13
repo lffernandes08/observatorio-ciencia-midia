@@ -1,0 +1,361 @@
+"""
+Scraper de conteúdo de Ciência da CNN Brasil.
+
+Usa a página de tema "https://www.cnnbrasil.com.br/tudo-sobre/ciencia/"
+(e suas páginas seguintes .../pagina/2/, .../pagina/3/, ...), que tem
+paginação de verdade via URL — bem mais robusta que a listagem da editoria
+(.../ciencia/), que só pagina via um botão "Carregar mais" carregado por
+JavaScript. Essa mudança resolve dois problemas observados na versão
+anterior:
+
+  1. Reset no meio da sessão: como cada página é uma navegação direta
+     (driver.get), não existe estado de "carregado" acumulado no navegador
+     para se perder — não há mais o risco de "a página voltar ao início".
+
+  2. Retomada real de backfill: como as páginas são numeradas, o progresso
+     de um backfill grande pode ser salvo como "última página processada"
+     e retomado exatamente dali na próxima execução — antes, era preciso
+     reclicar desde o começo a cada nova tentativa.
+
+Importante: a página "tudo sobre Ciência" agrega matérias de qualquer
+editoria marcada com o tema Ciência (vi matérias de "Saúde" junto com
+"Ciência" na inspeção manual) — por isso a editoria de cada matéria é
+capturada individualmente do card, em vez de fixada como "ciência".
+
+Modos de uso:
+    python cnn_brasil.py --auto
+        Coleta incremental diária: percorre a partir da página 1 até
+        cobrir a margem de segurança (mesmo espírito do --auto do main.py
+        da Folha). Sempre começa da página 1 (conteúdo mais recente).
+
+    python cnn_brasil.py --historico-dias 365
+        Backfill: percorre páginas sequenciais retomando de onde a última
+        execução parou (arquivo de progresso), até alcançar ~365 dias de
+        histórico ou esgotar o teto de páginas desta execução. Rode de
+        novo (mesmo comando) para continuar de onde parou.
+
+    python cnn_brasil.py --historico-dias 365 --reiniciar
+        Mesmo que acima, mas ignora o progresso salvo e recomeça da
+        página 1.
+"""
+
+import os
+import re
+import sys
+import time
+import argparse
+from datetime import datetime, timedelta
+
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+
+from newsplease import NewsPlease
+import pandas as pd
+
+
+ARQUIVO_SAIDA = "cnn_brasil.csv"
+ARQUIVO_PROGRESSO = "cnn_brasil_progresso.txt"
+VEICULO = "CNN Brasil"
+URL_BASE_PAGINADA = "https://www.cnnbrasil.com.br/tudo-sobre/ciencia"
+
+SELETOR_TITULO_LINK = "[id^='titulo-noticia-'] a"   # robusto a diferença de heading (h2 na página de tema, h3 na de editoria)
+XPATH_ANCESTRAL_CARD = "./ancestor::li[1]"
+SELETOR_DATA_NO_CARD = "time"
+SELETOR_EDITORIA_NO_CARD = "a[aria-label^='Ver mais sobre']"
+
+FORMATO_DATETIME_ATRIBUTO = "%Y-%m-%d %H:%M:%S"
+PADRAO_DATA_TEXTO = re.compile(r"(\d{2}/\d{2}/\d{4})")
+
+MAX_PAGINAS_POR_EXECUCAO = 40
+INTERVALO_ENTRE_PAGINAS = 1.5
+INTERVALO_ENTRE_MATERIAS = 0.5
+MARGEM_SEGURANCA_DIAS = 4
+
+
+def montar_url_pagina(pagina):
+    if pagina <= 1:
+        return URL_BASE_PAGINADA  # o próprio site linka a página 1 sem barra final
+    return f"{URL_BASE_PAGINADA}/pagina/{pagina}/"
+
+
+def carregar_urls_existentes():
+    if not os.path.exists(ARQUIVO_SAIDA):
+        return set()
+    try:
+        df_existente = pd.read_csv(ARQUIVO_SAIDA, encoding="utf-8-sig")
+        return set(df_existente["url"].dropna().astype(str))
+    except Exception:
+        return set()
+
+
+def carregar_ultima_pagina_processada():
+    if not os.path.exists(ARQUIVO_PROGRESSO):
+        return 0
+    try:
+        with open(ARQUIVO_PROGRESSO, "r", encoding="utf-8") as f:
+            return int(f.read().strip())
+    except Exception:
+        return 0
+
+
+def salvar_ultima_pagina_processada(pagina):
+    with open(ARQUIVO_PROGRESSO, "w", encoding="utf-8") as f:
+        f.write(str(pagina))
+
+
+def parsear_data_card(valor_datetime_attr):
+    if not valor_datetime_attr:
+        return None
+    try:
+        return datetime.strptime(valor_datetime_attr.strip()[:19], FORMATO_DATETIME_ATRIBUTO)
+    except ValueError:
+        match = PADRAO_DATA_TEXTO.search(valor_datetime_attr)
+        if match:
+            try:
+                return datetime.strptime(match.group(1), "%d/%m/%Y")
+            except ValueError:
+                return None
+        return None
+
+
+def coletar_pagina(driver, numero_pagina):
+    url = montar_url_pagina(numero_pagina)
+    driver.get(url)
+
+    try:
+        WebDriverWait(driver, 15).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, SELETOR_TITULO_LINK))
+        )
+    except Exception:
+        return []
+
+    links_titulo = driver.find_elements(By.CSS_SELECTOR, SELETOR_TITULO_LINK)
+    resultados = []
+
+    for link in links_titulo:
+        try:
+            url_materia = link.get_attribute("href")
+            titulo = link.text.strip()
+
+            if not url_materia or not titulo:
+                continue
+
+            try:
+                card = link.find_element(By.XPATH, XPATH_ANCESTRAL_CARD)
+            except Exception:
+                card = link
+
+            try:
+                elemento_data = card.find_element(By.CSS_SELECTOR, SELETOR_DATA_NO_CARD)
+                valor_datetime = elemento_data.get_attribute("datetime") or elemento_data.text
+            except Exception:
+                valor_datetime = None
+
+            try:
+                editoria = card.find_element(By.CSS_SELECTOR, SELETOR_EDITORIA_NO_CARD).text.strip()
+            except Exception:
+                editoria = "ciência"
+
+            data_dt = parsear_data_card(valor_datetime)
+
+            if url_materia and data_dt:
+                resultados.append({
+                    "url": url_materia,
+                    "title": titulo,
+                    "date_dt": data_dt,
+                    "section": editoria.lower() if editoria else "ciência",
+                })
+
+        except Exception:
+            continue
+
+    return resultados
+
+
+def coletar_paginas(data_limite_dt, max_paginas, pagina_inicial):
+    options = webdriver.ChromeOptions()
+    driver = webdriver.Chrome(options=options)
+
+    todos_cards = {}
+    motivo_parada = "max_paginas"
+    pagina_atual = pagina_inicial
+
+    try:
+        driver.maximize_window()
+
+        for i in range(max_paginas):
+            pagina_atual = pagina_inicial + i
+            cards_pagina = coletar_pagina(driver, pagina_atual)
+
+            if not cards_pagina:
+                motivo_parada = "pagina_vazia"
+                break
+
+            for card in cards_pagina:
+                todos_cards[card["url"]] = card
+
+            data_mais_antiga_da_pagina = min(c["date_dt"] for c in cards_pagina)
+
+            print(f"  Página {pagina_atual}: {len(cards_pagina)} matéria(s) "
+                  f"(mais antiga nesta página: {data_mais_antiga_da_pagina.strftime('%d/%m/%Y')}) — "
+                  f"{len(todos_cards)} no total acumulado")
+
+            salvar_ultima_pagina_processada(pagina_atual)
+
+            if data_mais_antiga_da_pagina < data_limite_dt:
+                motivo_parada = "atingiu_data_limite"
+                break
+
+            time.sleep(INTERVALO_ENTRE_PAGINAS)
+
+    finally:
+        driver.quit()
+
+    return list(todos_cards.values()), motivo_parada, pagina_atual
+
+
+def extrair_conteudo(cards_novos):
+    textos = []
+
+    for card in cards_novos:
+        try:
+            article = NewsPlease.from_url(card["url"])
+
+            textos.append({
+                "url": card["url"],
+                "section": card.get("section", "ciência"),
+                "title": article.title or card["title"],
+                "text": article.maintext,
+                "description": article.description,
+                "author": article.authors,
+                "image_url": article.image_url,
+                "date": card["date_dt"].strftime("%d/%m/%Y"),
+                "veiculo": VEICULO,
+            })
+            print(f"  ✓ {article.title or card['title']}")
+
+        except Exception as e:
+            textos.append({
+                "url": card["url"],
+                "section": card.get("section", "ciência"),
+                "title": card["title"],
+                "text": "ERRO!!!",
+                "description": "ERRO!!!",
+                "author": "ERRO!!!",
+                "image_url": "ERRO!!!",
+                "date": card["date_dt"].strftime("%d/%m/%Y"),
+                "veiculo": VEICULO,
+            })
+            print(f"  ✗ Erro ao extrair {card['url']}: {e}")
+
+        time.sleep(INTERVALO_ENTRE_MATERIAS)
+
+    return pd.DataFrame(textos)
+
+
+def salvar_incremental(df_novo):
+    if df_novo.empty:
+        return 0
+
+    if os.path.exists(ARQUIVO_SAIDA):
+        df_existente = pd.read_csv(ARQUIVO_SAIDA, encoding="utf-8-sig")
+        df_combinado = pd.concat([df_existente, df_novo], ignore_index=True)
+    else:
+        df_combinado = df_novo
+
+    antes = len(df_combinado)
+    df_combinado = df_combinado.drop_duplicates(subset="url", keep="first")
+    duplicadas = antes - len(df_combinado)
+
+    df_combinado.to_csv(ARQUIVO_SAIDA, index=False, encoding="utf-8-sig")
+
+    if duplicadas > 0:
+        print(f"{duplicadas} duplicata(s) descartada(s) na deduplicação por URL.")
+
+    return len(df_combinado)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Scraper de conteúdo de Ciência da CNN Brasil.")
+    parser.add_argument("--auto", action="store_true",
+                         help="Coleta incremental diária, com margem de segurança de "
+                              f"{MARGEM_SEGURANCA_DIAS} dias. Sempre começa da página 1.")
+    parser.add_argument("--historico-dias", type=int,
+                         help="Tenta coletar retroativamente até N dias atrás, retomando "
+                              "da última página processada (backfill).")
+    parser.add_argument("--max-paginas", type=int, default=MAX_PAGINAS_POR_EXECUCAO,
+                         help=f"Teto de páginas percorridas nesta execução "
+                              f"(padrão: {MAX_PAGINAS_POR_EXECUCAO}).")
+    parser.add_argument("--reiniciar", action="store_true",
+                         help="Ignora o progresso salvo e recomeça o backfill da página 1.")
+    args = parser.parse_args()
+
+    if not args.auto and not args.historico_dias:
+        print("Especifique --auto (coleta diária) ou --historico-dias N (backfill).")
+        sys.exit(1)
+
+    hoje_dt = datetime.now()
+
+    if args.auto:
+        data_limite_dt = hoje_dt - timedelta(days=MARGEM_SEGURANCA_DIAS)
+        pagina_inicial = 1
+        print(f"Modo automático: coletando até {data_limite_dt.strftime('%d/%m/%Y')} "
+              f"(margem de segurança de {MARGEM_SEGURANCA_DIAS} dias), a partir da página 1.")
+    else:
+        data_limite_dt = hoje_dt - timedelta(days=args.historico_dias)
+
+        if args.reiniciar:
+            pagina_inicial = 1
+            print("(--reiniciar) Ignorando progresso salvo, começando da página 1.")
+        else:
+            pagina_inicial = carregar_ultima_pagina_processada() + 1
+
+        print(f"Modo histórico: tentando coletar até {data_limite_dt.strftime('%d/%m/%Y')} "
+              f"({args.historico_dias} dias atrás), retomando a partir da página "
+              f"{pagina_inicial}, com teto de {args.max_paginas} página(s) nesta execução.")
+
+    cards, motivo_parada, ultima_pagina = coletar_paginas(
+        data_limite_dt, args.max_paginas, pagina_inicial
+    )
+
+    if not cards and motivo_parada == "pagina_vazia" and pagina_inicial == 1:
+        print(
+            "Nenhuma matéria foi encontrada logo na primeira página. Os seletores "
+            "provavelmente precisam ser ajustados — inspecione a página no navegador "
+            "(F12) e atualize as constantes SELETOR_*/XPATH_* no topo deste arquivo."
+        )
+        sys.exit(1)
+
+    print(f"\nColeta finalizada: {len(cards)} card(s) no total "
+          f"(motivo da parada: {motivo_parada}, última página: {ultima_pagina}).")
+
+    if motivo_parada == "max_paginas" and args.historico_dias:
+        print(
+            f"⚠ Atingiu o teto de {args.max_paginas} página(s) antes de alcançar "
+            f"{data_limite_dt.strftime('%d/%m/%Y')}. Rode o mesmo comando de novo "
+            f"para continuar — a próxima execução retoma direto da página "
+            f"{ultima_pagina + 1}, sem precisar refazer o que já foi percorrido."
+        )
+
+    urls_existentes = carregar_urls_existentes()
+    cards_novos = [c for c in cards if c["url"] not in urls_existentes]
+    cards_no_periodo = [c for c in cards_novos if c["date_dt"] >= data_limite_dt]
+
+    print(f"{len(cards_novos)} card(s) novo(s) (ainda não coletados antes), "
+          f"{len(cards_no_periodo)} dentro do período-alvo.")
+
+    if not cards_no_periodo:
+        print("Nada novo para extrair nesta execução.")
+        return
+
+    df_novo = extrair_conteudo(cards_no_periodo)
+    total_final = salvar_incremental(df_novo)
+
+    print(f"\n{len(df_novo)} matéria(s) processada(s) e salva(s) em {ARQUIVO_SAIDA} "
+          f"({total_final} matéria(s) no total).")
+
+
+if __name__ == "__main__":
+    main()
