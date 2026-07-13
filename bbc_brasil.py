@@ -285,6 +285,29 @@ def coletar_e_salvar_paginas(data_limite_dt, max_paginas, pagina_inicial, urls_e
     return motivo_parada, pagina_atual, total_processado_nesta_execucao, total_no_arquivo
 
 
+PADRAO_URL_DOMINIO = re.compile(r'(https?://|www\.|\.com\b|\.com\.br\b|\.org\b|\.net\b)', re.IGNORECASE)
+
+
+def limpar_autores(lista_autores):
+    """O news-please, em algumas matérias da BBC, captura um link de
+    'compartilhar no Facebook' (que fica ao lado do nome do autor na
+    página) como se fosse um autor a mais — ex: ['André Biernath',
+    'www.facebook.com']. Filtra qualquer item que pareça URL/domínio em
+    vez de nome de pessoa."""
+    if not lista_autores:
+        return lista_autores
+
+    autores_limpos = [
+        str(autor).strip() for autor in lista_autores
+        if autor and not PADRAO_URL_DOMINIO.search(str(autor))
+    ]
+
+    # Se o filtro removeu tudo (ex: só havia lixo, sem nenhum nome real),
+    # mantém a lista original — melhor mostrar o dado bruto do que
+    # silenciosamente esconder que não há autor identificado.
+    return autores_limpos if autores_limpos else lista_autores
+
+
 def extrair_conteudo(cards_novos):
     textos = []
 
@@ -298,7 +321,7 @@ def extrair_conteudo(cards_novos):
                 "title": article.title or card["title"],
                 "text": article.maintext,
                 "description": article.description,
-                "author": article.authors,
+                "author": limpar_autores(article.authors),
                 "image_url": article.image_url,
                 "date": card["date_dt"].strftime("%d/%m/%Y"),
                 "veiculo": VEICULO,

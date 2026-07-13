@@ -80,10 +80,17 @@ STOPWORDS = carregar_stopwords()
 COLUNAS_ESPERADAS = ["date", "title", "text", "section", "author", "url"]
 
 
+_PADRAO_URL_DOMINIO = re.compile(r'(https?://|www\.|\.com\b|\.com\.br\b|\.org\b|\.net\b)', re.IGNORECASE)
+
+
 def formatar_autor(valor):
     """Alguns registros trazem o autor como string de lista Python
     (ex: "['Fulano']", herdado do scraper) em vez do nome puro.
-    Normaliza para exibição sem quebrar se o valor já vier limpo."""
+    Normaliza para exibição sem quebrar se o valor já vier limpo.
+
+    Também filtra itens que pareçam URL/domínio (ex: 'www.facebook.com') —
+    proteção extra caso algum scraper capture um link de compartilhamento
+    junto com o nome do autor de verdade (já visto com a BBC)."""
     texto = str(valor).strip()
 
     if texto.startswith("[") and texto.endswith("]"):
@@ -91,6 +98,12 @@ def formatar_autor(valor):
             import ast
             lista = ast.literal_eval(texto)
             if isinstance(lista, list) and lista:
+                itens_limpos = [
+                    str(item).strip() for item in lista
+                    if item and not _PADRAO_URL_DOMINIO.search(str(item))
+                ]
+                if itens_limpos:
+                    return ", ".join(itens_limpos)
                 return ", ".join(str(item).strip() for item in lista)
         except (ValueError, SyntaxError):
             pass
