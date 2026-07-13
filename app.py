@@ -98,28 +98,53 @@ def formatar_autor(valor):
     return texto
 
 
+ARQUIVOS_FONTES = [
+    ("folha.csv", "Folha de S.Paulo"),
+    ("cnn_brasil.csv", "CNN Brasil"),
+]
+
+
 @st.cache_data
 def carregar_dados():
-    try:
-        df = pd.read_csv("folha.csv", encoding="utf-8-sig")
-    except FileNotFoundError:
+    dataframes = []
+
+    for caminho, veiculo_padrao in ARQUIVOS_FONTES:
+        if not os.path.exists(caminho):
+            continue
+
+        try:
+            df_fonte = pd.read_csv(caminho, encoding="utf-8-sig")
+        except Exception as e:
+            st.warning(f"Erro ao ler {caminho}, esta fonte foi ignorada: {e}")
+            continue
+
+        colunas_faltando = [c for c in COLUNAS_ESPERADAS if c not in df_fonte.columns]
+        if colunas_faltando:
+            st.warning(
+                f"{caminho} está com colunas faltando ({', '.join(colunas_faltando)}) "
+                "e foi ignorado."
+            )
+            continue
+
+        # Arquivos antigos (ex: folha.csv coletado antes do suporte a múltiplos
+        # veículos) podem não ter a coluna 'veiculo' — nesse caso, assume o
+        # veículo padrão daquele arquivo.
+        if "veiculo" not in df_fonte.columns:
+            df_fonte["veiculo"] = veiculo_padrao
+        else:
+            df_fonte["veiculo"] = df_fonte["veiculo"].fillna(veiculo_padrao)
+
+        dataframes.append(df_fonte)
+
+    if not dataframes:
+        nomes = ", ".join(caminho for caminho, _ in ARQUIVOS_FONTES)
         st.error(
-            "Arquivo folha.csv não encontrado na pasta do app. "
-            "Verifique se o arquivo está presente antes de continuar."
+            f"Nenhum arquivo de dados encontrado (procurado: {nomes}). "
+            "Verifique se pelo menos um está presente antes de continuar."
         )
-        st.stop()
-    except Exception as e:
-        st.error(f"Erro ao ler folha.csv: {e}")
         st.stop()
 
-    colunas_faltando = [c for c in COLUNAS_ESPERADAS if c not in df.columns]
-    if colunas_faltando:
-        st.error(
-            "O arquivo folha.csv está com colunas faltando: "
-            f"{', '.join(colunas_faltando)}. "
-            f"Colunas esperadas: {', '.join(COLUNAS_ESPERADAS)}."
-        )
-        st.stop()
+    df = pd.concat(dataframes, ignore_index=True)
 
     df["date_dt"] = pd.to_datetime(
         df["date"],
@@ -130,7 +155,7 @@ def carregar_dados():
     df = df.dropna(subset=["date_dt"])
 
     if df.empty:
-        st.error("Nenhuma linha com data válida foi encontrada em folha.csv.")
+        st.error("Nenhuma linha com data válida foi encontrada nos arquivos de dados.")
         st.stop()
 
     # "Data" (exibição) e agrupamentos por Mês/Ano
@@ -147,6 +172,7 @@ def carregar_dados():
     df["Editoria"] = df["section"].fillna("")
     df["Autor"] = df["author"].fillna("").apply(formatar_autor)
     df["URL"] = df["url"].fillna("")
+    df["Veículo"] = df["veiculo"].fillna("Desconhecido")
 
     df["Palavras"] = df["Texto"].apply(lambda x: len(str(x).split()))
 
@@ -390,6 +416,7 @@ def agrupar_por_escala(df, escala, coluna_valor=None):
     resultado["Período"] = resultado[col_rotulo]
     return resultado
 
+
 df_original = carregar_dados()
 df = df_original.copy()
 
@@ -423,6 +450,24 @@ if isinstance(periodo_selecionado, tuple) and len(periodo_selecionado) == 2:
 else:
     st.sidebar.info("Selecione a data final para aplicar o filtro de período.")
     periodo_label_sidebar = "período incompleto"
+
+veiculos_disponiveis = sorted(df_original["Veículo"].unique())
+
+if len(veiculos_disponiveis) > 1:
+    st.sidebar.subheader("Veículo")
+    veiculos_selecionados = st.sidebar.multiselect(
+        "Filtrar por veículo",
+        veiculos_disponiveis,
+        default=veiculos_disponiveis,
+        key="veiculos_selecionados"
+    )
+    if veiculos_selecionados:
+        df = df[df["Veículo"].isin(veiculos_selecionados)]
+    else:
+        st.sidebar.warning("Nenhum veículo selecionado — mostrando todos.")
+        veiculos_selecionados = veiculos_disponiveis
+else:
+    veiculos_selecionados = veiculos_disponiveis
 
 st.sidebar.subheader("Visualização temporal")
 
@@ -993,6 +1038,56 @@ if secao_selecionada == "Visão geral":
     )
 
     st.divider()
+
+    if len(veiculos_disponiveis) > 1:
+        st.subheader("Comparação por veículo")
+
+        por_veiculo = (
+            df.groupby("Veículo")
+            .agg(Matérias=("URL", "count"), Média_palavras=("Palavras", "mean"))
+            .reset_index()
+        )
+        por_veiculo["Média_palavras"] = por_veiculo["Média_palavras"].round(0).fillna(0).astype(int)
+        por_veiculo.columns = ["Veículo", "Matérias", "Média de palavras"]
+        por_veiculo = por_veiculo.sort_values("Matérias", ascending=False)
+
+        col_tabela_veiculo, col_grafico_veiculo = st.columns([1, 2])
+
+        with col_tabela_veiculo:
+            st.dataframe(por_veiculo, use_container_width=True, hide_index=True)
+
+        with col_grafico_veiculo:
+            fig_veiculo_pizza = px.pie(
+                por_veiculo, names="Veículo", values="Matérias",
+                title="Participação por veículo no período filtrado", hole=0.4
+            )
+            st.plotly_chart(fig_veiculo_pizza, use_container_width=True)
+
+        mapa_col_escala_veiculo = {
+            "Dia": ("Data", "date_dt"),
+            "Mês": ("Mês", "mes_dt"),
+            "Ano": ("Ano", "ano_dt")
+        }
+        col_rotulo_v, col_ordem_v = mapa_col_escala_veiculo[escala]
+
+        serie_veiculo = (
+            df.groupby([col_rotulo_v, col_ordem_v, "Veículo"])
+            .size()
+            .reset_index(name="Matérias")
+            .sort_values(col_ordem_v)
+        )
+        serie_veiculo["Período"] = serie_veiculo[col_rotulo_v]
+
+        fig_veiculo_evolucao = px.line(
+            serie_veiculo,
+            x="Período", y="Matérias", color="Veículo",
+            markers=True,
+            title=f"Evolução por {escala.lower()}, por veículo"
+        )
+        fig_veiculo_evolucao.update_layout(xaxis_title="Período", xaxis_type="category")
+        st.plotly_chart(fig_veiculo_evolucao, use_container_width=True)
+
+        st.divider()
 
     st.subheader("Evolução da cobertura")
 
