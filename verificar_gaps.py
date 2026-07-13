@@ -1,29 +1,36 @@
 """
 Verifica se existem dias sem nenhuma matéria coletada dentro do intervalo
-já presente em folha.csv.
+já presente em cada fonte de dados (Folha, CNN Brasil).
 
-Diferente do modo `--auto` do main.py (que só olha a ponta — do último dia
-salvo até hoje), este script varre o histórico INTEIRO em busca de lacunas
-no meio, que podem ter ficado de coletas manuais interrompidas, erros
-silenciosos, ou execuções puladas antes de a automação existir.
+Diferente do modo `--auto` dos scrapers (que só olha a ponta — do último
+dia salvo até hoje), este script varre o histórico INTEIRO de cada fonte
+em busca de lacunas no meio, que podem ter ficado de coletas manuais
+interrompidas, erros silenciosos, ou execuções puladas.
 
 Uso:
     python verificar_gaps.py
 """
 
+from datetime import datetime
 import pandas as pd
 
-ARQUIVO_ENTRADA = "folha.csv"
+ARQUIVOS_FONTES = [
+    ("folha.csv", "Folha de S.Paulo"),
+    ("cnn_brasil.csv", "CNN Brasil"),
+]
 
 
-def identificar_gaps():
-    df = pd.read_csv(ARQUIVO_ENTRADA, encoding="utf-8-sig")
+def identificar_gaps(arquivo):
+    try:
+        df = pd.read_csv(arquivo, encoding="utf-8-sig")
+    except FileNotFoundError:
+        return "arquivo_ausente"
 
     df["date_dt"] = pd.to_datetime(df["date"], format="%d/%m/%Y", errors="coerce")
     df = df.dropna(subset=["date_dt"])
 
     if df.empty:
-        print("Nenhuma data válida encontrada em folha.csv.")
+        print(f"Nenhuma data válida encontrada em {arquivo}.")
         return None
 
     datas_presentes = set(df["date_dt"].dt.normalize().unique())
@@ -58,44 +65,76 @@ def agrupar_em_intervalos(dias_faltando):
     return intervalos
 
 
+def sugerir_comando(arquivo, inicio, fim):
+    """Cada scraper tem uma forma diferente de pedir um intervalo
+    específico — a Folha aceita --ini/--fim diretamente; a CNN Brasil só
+    tem --historico-dias (contado a partir de hoje), então convertemos."""
+    if arquivo == "folha.csv":
+        return f"python main.py --ini {inicio.strftime('%d/%m/%Y')} --fim {fim.strftime('%d/%m/%Y')}"
+
+    if arquivo == "cnn_brasil.csv":
+        dias_ate_o_inicio_do_gap = (datetime.now() - inicio).days
+        return (
+            f"python cnn_brasil.py --historico-dias {dias_ate_o_inicio_do_gap} "
+            "(cobre o gap, mas também revarre dias já coletados — não tem "
+            "problema, são ignorados na extração por já existirem no CSV)"
+        )
+
+    return None
+
+
 def main():
-    resultado = identificar_gaps()
-    if resultado is None:
-        return
+    algum_gap_encontrado = False
 
-    dias_faltando, data_min, data_max, total_dias = resultado
+    for arquivo, nome_veiculo in ARQUIVOS_FONTES:
+        print(f"\n{'=' * 60}")
+        print(f"{nome_veiculo} ({arquivo})")
+        print("=" * 60)
 
-    print(
-        f"Intervalo coletado: {data_min.strftime('%d/%m/%Y')} a "
-        f"{data_max.strftime('%d/%m/%Y')} ({total_dias} dia(s) no total)."
-    )
+        resultado = identificar_gaps(arquivo)
 
-    if not dias_faltando:
-        print("\nNenhuma lacuna encontrada — todos os dias do intervalo têm ao menos 1 matéria.")
-        return
+        if resultado == "arquivo_ausente":
+            print(f"Arquivo {arquivo} ainda não existe — nada a checar.")
+            continue
 
-    intervalos = agrupar_em_intervalos(dias_faltando)
+        if resultado is None:
+            continue
 
-    print(f"\n{len(dias_faltando)} dia(s) sem nenhuma matéria, em {len(intervalos)} intervalo(s):\n")
+        dias_faltando, data_min, data_max, total_dias = resultado
 
-    for inicio, fim in intervalos:
-        if inicio == fim:
-            print(f"  {inicio.strftime('%d/%m/%Y')} (1 dia)")
-        else:
-            dias = (fim - inicio).days + 1
-            print(f"  {inicio.strftime('%d/%m/%Y')} a {fim.strftime('%d/%m/%Y')} ({dias} dias)")
+        print(
+            f"Intervalo coletado: {data_min.strftime('%d/%m/%Y')} a "
+            f"{data_max.strftime('%d/%m/%Y')} ({total_dias} dia(s) no total)."
+        )
 
-    print("\nPara coletar cada lacuna manualmente, rode:")
-    for inicio, fim in intervalos:
-        print(f"  python main.py --ini {inicio.strftime('%d/%m/%Y')} --fim {fim.strftime('%d/%m/%Y')}")
+        if not dias_faltando:
+            print("Nenhuma lacuna encontrada — todos os dias do intervalo têm ao menos 1 matéria.")
+            continue
 
-    print(
-        "\nObs.: um dia sem matéria pode ser normal (editoria de baixo volume "
-        "de publicação) e não necessariamente indica falha de coleta. Use bom "
-        "senso antes de rodar tudo de uma vez — vale conferir se o período "
-        "coincide com algo plausível (fim de semana, feriado, etc.) antes de "
-        "assumir que é uma falha real."
-    )
+        algum_gap_encontrado = True
+        intervalos = agrupar_em_intervalos(dias_faltando)
+
+        print(f"\n{len(dias_faltando)} dia(s) sem nenhuma matéria, em {len(intervalos)} intervalo(s):\n")
+
+        for inicio, fim in intervalos:
+            if inicio == fim:
+                print(f"  {inicio.strftime('%d/%m/%Y')} (1 dia)")
+            else:
+                dias = (fim - inicio).days + 1
+                print(f"  {inicio.strftime('%d/%m/%Y')} a {fim.strftime('%d/%m/%Y')} ({dias} dias)")
+
+        print("\nPara coletar cada lacuna:")
+        for inicio, fim in intervalos:
+            print(f"  {sugerir_comando(arquivo, inicio, fim)}")
+
+    if algum_gap_encontrado:
+        print(
+            "\n\nObs.: um dia sem matéria pode ser normal (baixo volume de "
+            "publicação naquele veículo) e não necessariamente indica falha "
+            "de coleta. Use bom senso antes de rodar tudo de uma vez — vale "
+            "conferir se o período coincide com algo plausível (fim de "
+            "semana, feriado, etc.) antes de assumir que é uma falha real."
+        )
 
 
 if __name__ == "__main__":

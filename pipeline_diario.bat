@@ -24,13 +24,16 @@ echo ============================================== >> %LOGFILE%
 echo Execucao iniciada em %date% %time% >> %LOGFILE%
 echo ============================================== >> %LOGFILE%
 
-echo [1/3] Coletando materias do dia... >> %LOGFILE%
+echo [1/4] Coletando materias da Folha... >> %LOGFILE%
 python main.py --auto >> %LOGFILE% 2>&1
 
-echo [2/3] Extraindo palavras-chave... >> %LOGFILE%
+echo [2/4] Coletando materias da CNN Brasil... >> %LOGFILE%
+python cnn_brasil.py --auto >> %LOGFILE% 2>&1
+
+echo [3/4] Extraindo palavras-chave... >> %LOGFILE%
 python extrair_keywords.py >> %LOGFILE% 2>&1
 
-echo [3/3] Gerando analise diaria de IA... >> %LOGFILE%
+echo [4/4] Gerando analise diaria de IA... >> %LOGFILE%
 python analise_diaria.py >> %LOGFILE% 2>&1
 
 echo Pipeline concluido em %date% %time% >> %LOGFILE%
