@@ -90,6 +90,23 @@ def carregar_urls_existentes():
         return set()
 
 
+def obter_ultima_data_coletada():
+    """Data mais recente já presente em cnn_brasil.csv — usada no modo
+    --auto para estender a cobertura além da margem de segurança fixa
+    quando houver um gap maior (ex: PC ficou vários dias desligado),
+    espelhando a mesma lógica do main.py da Folha."""
+    if not os.path.exists(ARQUIVO_SAIDA):
+        return None
+    try:
+        df_existente = pd.read_csv(ARQUIVO_SAIDA, encoding="utf-8-sig")
+        datas = pd.to_datetime(df_existente["date"], format="%d/%m/%Y", errors="coerce").dropna()
+        if datas.empty:
+            return None
+        return datas.max()
+    except Exception:
+        return None
+
+
 def carregar_ultima_pagina_processada():
     if not os.path.exists(ARQUIVO_PROGRESSO):
         return 0
@@ -299,10 +316,30 @@ def main():
     hoje_dt = datetime.now()
 
     if args.auto:
-        data_limite_dt = hoje_dt - timedelta(days=MARGEM_SEGURANCA_DIAS)
+        limite_seguranca_dt = hoje_dt - timedelta(days=MARGEM_SEGURANCA_DIAS)
+        ultima_data_coletada = obter_ultima_data_coletada()
+
+        if ultima_data_coletada is None:
+            data_limite_dt = limite_seguranca_dt
+        else:
+            inicio_catchup_dt = ultima_data_coletada + timedelta(days=1)
+            # O mais antigo dos dois: cobre gaps grandes (PC desligado por
+            # vários dias) E garante a margem de segurança mínima, mesmo
+            # sem gap nenhum — mesma lógica do main.py da Folha.
+            data_limite_dt = min(inicio_catchup_dt, limite_seguranca_dt)
+
         pagina_inicial = 1
-        print(f"Modo automático: coletando até {data_limite_dt.strftime('%d/%m/%Y')} "
-              f"(margem de segurança de {MARGEM_SEGURANCA_DIAS} dias), a partir da página 1.")
+
+        if ultima_data_coletada is not None and data_limite_dt < limite_seguranca_dt:
+            print(
+                f"Modo automático: gap detectado (última coleta em "
+                f"{ultima_data_coletada.strftime('%d/%m/%Y')}) — estendendo "
+                f"cobertura até {data_limite_dt.strftime('%d/%m/%Y')} em vez "
+                f"da margem padrão de {MARGEM_SEGURANCA_DIAS} dias."
+            )
+        else:
+            print(f"Modo automático: coletando até {data_limite_dt.strftime('%d/%m/%Y')} "
+                  f"(margem de segurança de {MARGEM_SEGURANCA_DIAS} dias), a partir da página 1.")
     else:
         data_limite_dt = hoje_dt - timedelta(days=args.historico_dias)
 
