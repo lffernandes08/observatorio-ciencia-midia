@@ -115,6 +115,7 @@ ARQUIVOS_FONTES = [
     ("folha.csv", "Folha de S.Paulo"),
     ("cnn_brasil.csv", "CNN Brasil"),
     ("bbc_brasil.csv", "BBC News Brasil"),
+    ("g1_globo.csv", "G1"),
 ]
 
 
