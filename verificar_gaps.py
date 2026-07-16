@@ -18,6 +18,7 @@ ARQUIVOS_FONTES = [
     ("folha.csv", "Folha de S.Paulo"),
     ("cnn_brasil.csv", "CNN Brasil"),
     ("bbc_brasil.csv", "BBC News Brasil"),
+    ("g1_globo.csv", "G1"),
 ]
 
 
@@ -68,14 +69,20 @@ def agrupar_em_intervalos(dias_faltando):
 
 def sugerir_comando(arquivo, inicio, fim):
     """Cada scraper tem uma forma diferente de pedir um intervalo
-    específico — a Folha aceita --ini/--fim diretamente; CNN Brasil e BBC
-    Brasil só têm --historico-dias (contado a partir de hoje), então
+    específico — a Folha aceita --ini/--fim diretamente; CNN Brasil, BBC
+    Brasil e G1 só têm --historico-dias (contado a partir de hoje), então
     convertemos."""
     if arquivo == "folha.csv":
         return f"python main.py --ini {inicio.strftime('%d/%m/%Y')} --fim {fim.strftime('%d/%m/%Y')}"
 
-    if arquivo in ("cnn_brasil.csv", "bbc_brasil.csv"):
-        script = "cnn_brasil.py" if arquivo == "cnn_brasil.csv" else "bbc_brasil.py"
+    mapa_scripts = {
+        "cnn_brasil.csv": "cnn_brasil.py",
+        "bbc_brasil.csv": "bbc_brasil.py",
+        "g1_globo.csv": "g1_globo.py",
+    }
+
+    if arquivo in mapa_scripts:
+        script = mapa_scripts[arquivo]
         dias_ate_o_inicio_do_gap = (datetime.now() - inicio).days
         return (
             f"python {script} --historico-dias {dias_ate_o_inicio_do_gap} "

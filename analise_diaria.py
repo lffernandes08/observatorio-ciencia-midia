@@ -6,7 +6,7 @@ import pandas as pd
 from openai import OpenAI
 
 
-ARQUIVOS_FONTES = ["folha.csv", "cnn_brasil.csv", "bbc_brasil.csv"]
+ARQUIVOS_FONTES = ["folha.csv", "cnn_brasil.csv", "bbc_brasil.csv", "g1_globo.csv"]
 ARQUIVO_SAIDA = "analise_diaria.jsonl"
 LIMITE_TEXTO_MATERIA = 2500
 

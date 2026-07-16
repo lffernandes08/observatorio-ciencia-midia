@@ -29,21 +29,37 @@ import pandas as pd
 
 ARQUIVO_SAIDA = "folha.csv"
 
+# Quantos dias antes de "hoje" a coleta automática sempre revarre, mesmo que
+# já tenham sido coletados antes. Protege contra matérias que demoram a
+# aparecer no índice de busca da Folha (publicadas num dia, indexadas só
+# alguns dias depois) — sem isso, essas matérias nunca seriam recapturadas,
+# já que o modo --auto normal só olha pra frente do último dia salvo.
+MARGEM_SEGURANCA_DIAS = 4
+
 
 # =========================
 # 1. Datas da busca
 # =========================
 
 def determinar_intervalo_auto():
-    """Calcula o intervalo a coletar no modo --auto: do dia seguinte ao
-    último dia já presente em folha.csv até hoje. Isso faz a coleta se
-    autocorrigir sozinha se o computador ficar dias desligado — na próxima
-    execução, ela cobre tudo que ficou faltando, não só o dia atual."""
+    """Calcula o intervalo a coletar no modo --auto: o menor entre (a) o dia
+    seguinte ao último dia salvo em folha.csv (catch-up normal de gaps) e
+    (b) hoje menos MARGEM_SEGURANCA_DIAS (revarredura de segurança fixa).
+
+    Isso garante duas coisas ao mesmo tempo:
+    - Se o computador ficar dias desligado, a coleta ainda recupera o
+      intervalo inteiro que ficou pendente (catch-up).
+    - Mesmo em uso normal (sem gaps), os últimos N dias são sempre
+      reconferidos, pegando matérias que só apareceram na busca depois.
+
+    A deduplicação por URL feita ao salvar garante que revarrer dias já
+    coletados não gera nenhuma linha duplicada — só acrescenta o que
+    ainda não estava lá."""
     hoje_dt = datetime.now()
+    limite_seguranca_dt = hoje_dt - timedelta(days=MARGEM_SEGURANCA_DIAS)
 
     if not os.path.exists(ARQUIVO_SAIDA):
-        hoje = hoje_dt.strftime("%d/%m/%Y")
-        return hoje, hoje
+        return limite_seguranca_dt.strftime("%d/%m/%Y"), hoje_dt.strftime("%d/%m/%Y")
 
     try:
         df_existente = pd.read_csv(ARQUIVO_SAIDA, encoding="utf-8-sig")
@@ -54,14 +70,17 @@ def determinar_intervalo_auto():
         datas_existentes = pd.Series([], dtype="datetime64[ns]")
 
     if datas_existentes.empty:
-        hoje = hoje_dt.strftime("%d/%m/%Y")
-        return hoje, hoje
+        return limite_seguranca_dt.strftime("%d/%m/%Y"), hoje_dt.strftime("%d/%m/%Y")
 
     ultimo_dia = datas_existentes.max()
-    inicio_dt = ultimo_dia + timedelta(days=1)
+    inicio_catchup_dt = ultimo_dia + timedelta(days=1)
+
+    # Sempre o mais antigo dos dois: cobre gaps grandes E garante a margem
+    # de segurança mínima de MARGEM_SEGURANCA_DIAS, mesmo sem gap nenhum.
+    inicio_dt = min(inicio_catchup_dt, limite_seguranca_dt)
 
     if inicio_dt.date() > hoje_dt.date():
-        return None, None  # já está em dia, nada a coletar
+        return None, None  # situação anômala (data futura salva); nada a coletar
 
     return inicio_dt.strftime("%d/%m/%Y"), hoje_dt.strftime("%d/%m/%Y")
 
@@ -86,8 +105,9 @@ def obter_datas():
     parser.add_argument(
         "--auto",
         action="store_true",
-        help="Coleta do dia seguinte ao último salvo em folha.csv até hoje "
-             "(cobre gaps automaticamente; recomendado para automação diária)."
+        help="Coleta do dia seguinte ao último salvo em folha.csv até hoje, "
+             "com margem de segurança de revarredura dos últimos dias "
+             "(cobre gaps e matérias tardias; recomendado para automação diária)."
     )
     parser.add_argument(
         "--hoje",
@@ -100,14 +120,19 @@ def obter_datas():
         ini_auto, fim_auto = determinar_intervalo_auto()
 
         if ini_auto is None:
-            print("Já está tudo atualizado — nenhuma coleta necessária hoje.")
+            print("Situação anômala detectada (data futura salva) — nenhuma coleta realizada.")
             sys.exit(0)
 
         if ini_auto == fim_auto:
             print(f"Modo automático: coletando o dia {ini_auto}.")
         else:
-            print(f"Modo automático: coletando de {ini_auto} a {fim_auto} "
-                  "(cobrindo dias que ficaram pendentes desde a última execução).")
+            print(
+                f"Modo automático: coletando de {ini_auto} a {fim_auto} "
+                f"(inclui margem de segurança de {MARGEM_SEGURANCA_DIAS} dia(s) — "
+                "revarre dias recentes já coletados para pegar matérias que "
+                "demoraram a aparecer na busca; duplicatas são descartadas "
+                "automaticamente pela URL)."
+            )
 
         return ini_auto, fim_auto
 

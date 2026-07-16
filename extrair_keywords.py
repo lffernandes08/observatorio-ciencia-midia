@@ -4,7 +4,7 @@ import time
 import pandas as pd
 from openai import OpenAI
 
-ARQUIVOS_FONTES = ["folha.csv", "cnn_brasil.csv", "bbc_brasil.csv"]
+ARQUIVOS_FONTES = ["folha.csv", "cnn_brasil.csv", "bbc_brasil.csv", "g1_globo.csv"]
 ARQUIVO_SAIDA = "materias_keywords.csv"
 MODELO = "gpt-4o-mini"
 INTERVALO_ENTRE_CHAMADAS = 1

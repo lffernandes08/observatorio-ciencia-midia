@@ -137,9 +137,32 @@ def parsear_data_card(valor_datetime_attr):
         return None
 
 
+def carregar_pagina_com_retry(driver, url, tentativas=3, espera_entre_tentativas=8):
+    """Tenta carregar a URL, com novas tentativas em caso de timeout de
+    rede/conexão — coletas longas (centenas de páginas) têm chance real de
+    esbarrar num timeout pontual do navegador ou da rede."""
+    ultimo_erro = None
+    for tentativa in range(1, tentativas + 1):
+        try:
+            driver.get(url)
+            return True
+        except Exception as e:
+            ultimo_erro = e
+            print(f"    Tentativa {tentativa}/{tentativas} falhou "
+                  f"({e.__class__.__name__}), aguardando {espera_entre_tentativas}s...")
+            time.sleep(espera_entre_tentativas)
+
+    print(f"    Falha definitiva ao carregar a página após {tentativas} tentativas: {ultimo_erro}")
+    return False
+
+
 def coletar_pagina(driver, numero_pagina):
+    """Retorna: lista de cards (pode ser vazia = fim do conteúdo),
+    ou None = falha de conexão (diferente de 'página vazia')."""
     url = montar_url_pagina(numero_pagina)
-    driver.get(url)
+
+    if not carregar_pagina_com_retry(driver, url):
+        return None
 
     try:
         WebDriverWait(driver, 15).until(
@@ -191,13 +214,18 @@ def coletar_pagina(driver, numero_pagina):
     return resultados
 
 
-def coletar_paginas(data_limite_dt, max_paginas, pagina_inicial):
+def coletar_e_salvar_paginas(data_limite_dt, max_paginas, pagina_inicial, urls_existentes):
+    """Percorre páginas sequenciais, extraindo e salvando o conteúdo de
+    cada uma IMEDIATAMENTE após coletá-la — não no final. Isso garante que,
+    se o processo cair no meio (ex: timeout de rede numa página distante),
+    tudo que já foi processado até ali continua salvo em cnn_brasil.csv."""
     options = webdriver.ChromeOptions()
     driver = webdriver.Chrome(options=options)
 
-    todos_cards = {}
     motivo_parada = "max_paginas"
     pagina_atual = pagina_inicial
+    total_processado_nesta_execucao = 0
+    total_no_arquivo = None
 
     try:
         driver.maximize_window()
@@ -206,19 +234,30 @@ def coletar_paginas(data_limite_dt, max_paginas, pagina_inicial):
             pagina_atual = pagina_inicial + i
             cards_pagina = coletar_pagina(driver, pagina_atual)
 
+            if cards_pagina is None:
+                motivo_parada = "erro_conexao"
+                break
+
             if not cards_pagina:
                 motivo_parada = "pagina_vazia"
                 break
 
-            for card in cards_pagina:
-                todos_cards[card["url"]] = card
-
             data_mais_antiga_da_pagina = min(c["date_dt"] for c in cards_pagina)
 
-            print(f"  Página {pagina_atual}: {len(cards_pagina)} matéria(s) "
-                  f"(mais antiga nesta página: {data_mais_antiga_da_pagina.strftime('%d/%m/%Y')}) — "
-                  f"{len(todos_cards)} no total acumulado")
+            cards_novos = [c for c in cards_pagina if c["url"] not in urls_existentes]
+            cards_no_periodo = [c for c in cards_novos if c["date_dt"] >= data_limite_dt]
 
+            print(f"  Página {pagina_atual}: {len(cards_pagina)} matéria(s) na listagem, "
+                  f"{len(cards_no_periodo)} nova(s) dentro do período "
+                  f"(mais antiga nesta página: {data_mais_antiga_da_pagina.strftime('%d/%m/%Y')})")
+
+            if cards_no_periodo:
+                df_pagina = extrair_conteudo(cards_no_periodo)
+                total_no_arquivo = salvar_incremental(df_pagina)
+                urls_existentes.update(c["url"] for c in cards_no_periodo)
+                total_processado_nesta_execucao += len(cards_no_periodo)
+
+            # Checkpoint só avança DEPOIS de extrair e salvar com sucesso.
             salvar_ultima_pagina_processada(pagina_atual)
 
             if data_mais_antiga_da_pagina < data_limite_dt:
@@ -230,7 +269,7 @@ def coletar_paginas(data_limite_dt, max_paginas, pagina_inicial):
     finally:
         driver.quit()
 
-    return list(todos_cards.values()), motivo_parada, pagina_atual
+    return motivo_parada, pagina_atual, total_processado_nesta_execucao, total_no_arquivo
 
 
 def extrair_conteudo(cards_novos):
@@ -353,11 +392,13 @@ def main():
               f"({args.historico_dias} dias atrás), retomando a partir da página "
               f"{pagina_inicial}, com teto de {args.max_paginas} página(s) nesta execução.")
 
-    cards, motivo_parada, ultima_pagina = coletar_paginas(
-        data_limite_dt, args.max_paginas, pagina_inicial
+    urls_existentes = carregar_urls_existentes()
+
+    motivo_parada, ultima_pagina, total_processado, total_no_arquivo = coletar_e_salvar_paginas(
+        data_limite_dt, args.max_paginas, pagina_inicial, urls_existentes
     )
 
-    if not cards and motivo_parada == "pagina_vazia" and pagina_inicial == 1:
+    if total_processado == 0 and motivo_parada == "pagina_vazia" and pagina_inicial == 1:
         print(
             "Nenhuma matéria foi encontrada logo na primeira página. Os seletores "
             "provavelmente precisam ser ajustados — inspecione a página no navegador "
@@ -365,33 +406,26 @@ def main():
         )
         sys.exit(1)
 
-    print(f"\nColeta finalizada: {len(cards)} card(s) no total "
-          f"(motivo da parada: {motivo_parada}, última página: {ultima_pagina}).")
+    print(f"\nColeta finalizada: {total_processado} matéria(s) nova(s) processada(s) "
+          f"nesta execução (motivo da parada: {motivo_parada}, última página: {ultima_pagina}).")
+
+    if total_no_arquivo is not None:
+        print(f"Total agora em {ARQUIVO_SAIDA}: {total_no_arquivo} matéria(s).")
 
     if motivo_parada == "max_paginas" and args.historico_dias:
         print(
             f"⚠ Atingiu o teto de {args.max_paginas} página(s) antes de alcançar "
             f"{data_limite_dt.strftime('%d/%m/%Y')}. Rode o mesmo comando de novo "
             f"para continuar — a próxima execução retoma direto da página "
-            f"{ultima_pagina + 1}, sem precisar refazer o que já foi percorrido."
+            f"{ultima_pagina + 1}, sem precisar refazer o que já foi processado."
         )
-
-    urls_existentes = carregar_urls_existentes()
-    cards_novos = [c for c in cards if c["url"] not in urls_existentes]
-    cards_no_periodo = [c for c in cards_novos if c["date_dt"] >= data_limite_dt]
-
-    print(f"{len(cards_novos)} card(s) novo(s) (ainda não coletados antes), "
-          f"{len(cards_no_periodo)} dentro do período-alvo.")
-
-    if not cards_no_periodo:
-        print("Nada novo para extrair nesta execução.")
-        return
-
-    df_novo = extrair_conteudo(cards_no_periodo)
-    total_final = salvar_incremental(df_novo)
-
-    print(f"\n{len(df_novo)} matéria(s) processada(s) e salva(s) em {ARQUIVO_SAIDA} "
-          f"({total_final} matéria(s) no total).")
+    elif motivo_parada == "erro_conexao":
+        print(
+            f"⚠ Parou por falha de conexão persistente na página {ultima_pagina + 1} "
+            "(depois de 3 tentativas). Tudo que já foi processado até a página "
+            f"{ultima_pagina} já está salvo — rode o mesmo comando de novo pra "
+            "continuar dali."
+        )
 
 
 if __name__ == "__main__":
