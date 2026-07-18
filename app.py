@@ -129,16 +129,13 @@ def carregar_dados():
 
         try:
             df_fonte = pd.read_csv(caminho, encoding="utf-8-sig")
-        except Exception as e:
-            st.warning(f"Erro ao ler {caminho}, esta fonte foi ignorada: {e}")
+        except Exception:
+            st.warning(f"Não foi possível carregar os dados de {veiculo_padrao} — essa fonte foi ignorada nesta sessão.")
             continue
 
         colunas_faltando = [c for c in COLUNAS_ESPERADAS if c not in df_fonte.columns]
         if colunas_faltando:
-            st.warning(
-                f"{caminho} está com colunas faltando ({', '.join(colunas_faltando)}) "
-                "e foi ignorado."
-            )
+            st.warning(f"Os dados de {veiculo_padrao} estão incompletos e foram ignorados nesta sessão.")
             continue
 
         # Arquivos antigos (ex: folha.csv coletado antes do suporte a múltiplos
@@ -152,10 +149,9 @@ def carregar_dados():
         dataframes.append(df_fonte)
 
     if not dataframes:
-        nomes = ", ".join(caminho for caminho, _ in ARQUIVOS_FONTES)
         st.error(
-            f"Nenhum arquivo de dados encontrado (procurado: {nomes}). "
-            "Verifique se pelo menos um está presente antes de continuar."
+            "Nenhuma fonte de dados foi encontrada. Este é um problema de "
+            "configuração do app — entre em contato com quem mantém o projeto."
         )
         st.stop()
 
@@ -188,6 +184,16 @@ def carregar_dados():
     df["Autor"] = df["author"].fillna("").apply(formatar_autor)
     df["URL"] = df["url"].fillna("")
     df["Veículo"] = df["veiculo"].fillna("Desconhecido")
+
+    # Os 4 scrapers já salvam a URL da imagem de capa de cada matéria (via
+    # news-please), mas o app nunca expunha essa coluna. "ERRO!!!" é o
+    # placeholder usado pelos scrapers quando a extração falhou — tratado
+    # aqui como "sem imagem", não como uma URL de verdade.
+    if "image_url" in df.columns:
+        df["Imagem"] = df["image_url"].fillna("")
+        df.loc[df["Imagem"] == "ERRO!!!", "Imagem"] = ""
+    else:
+        df["Imagem"] = ""
 
     df["Palavras"] = df["Texto"].apply(lambda x: len(str(x).split()))
 
@@ -292,6 +298,32 @@ ROTULOS_ABRANGENCIA = {
 }
 
 
+def contar_com_normalizacao_de_caixa(nomes):
+    """Conta ocorrências de nomes (instituições/pessoas) tratando variações
+    de maiúsculas/minúsculas como a mesma entidade — a IA nem sempre
+    capitaliza o mesmo nome de forma consistente entre chamadas diferentes
+    (ex: "Nasa" vs "NASA" contados como duas instituições distintas, cada
+    uma com metade da contagem real). Para exibição, usa a grafia mais
+    frequente entre as variantes encontradas, não uma escolha arbitrária."""
+    contagem_por_chave = Counter()
+    variantes_por_chave = {}
+
+    for nome in nomes:
+        nome = str(nome).strip()
+        if not nome:
+            continue
+        chave = nome.casefold()
+        contagem_por_chave[chave] += 1
+        variantes_por_chave.setdefault(chave, Counter())[nome] += 1
+
+    resultado = Counter()
+    for chave, total in contagem_por_chave.items():
+        grafia_mais_comum = variantes_por_chave[chave].most_common(1)[0][0]
+        resultado[grafia_mais_comum] = total
+
+    return resultado
+
+
 def agregar_classificacoes_materias(df_com_keywords, top_n=8):
     """Agrega, em Python (sem chamada de IA), o enquadramento, área,
     abrangência, instituições e pessoas das matérias já classificadas por
@@ -305,10 +337,10 @@ def agregar_classificacoes_materias(df_com_keywords, top_n=8):
     contagem_frame = Counter(f for f in df_com_keywords["frame_predominante"] if f)
     contagem_abrangencia = Counter(a for a in df_com_keywords["abrangencia"] if a)
     contagem_area = Counter(a for a in df_com_keywords["area"] if a)
-    contagem_instituicoes = Counter(
+    contagem_instituicoes = contar_com_normalizacao_de_caixa(
         nome for lista in df_com_keywords["instituicoes_lista"] for nome in lista if nome
     )
-    contagem_pessoas = Counter(
+    contagem_pessoas = contar_com_normalizacao_de_caixa(
         nome for lista in df_com_keywords["pessoas_lista"] for nome in lista if nome
     )
 
@@ -320,12 +352,12 @@ def agregar_classificacoes_materias(df_com_keywords, top_n=8):
 
     return {
         "enquadramentos_predominantes": [
-            ROTULOS_FRAME.get(f, f) for f, _ in contagem_frame.most_common(top_n)
+            (ROTULOS_FRAME.get(f, f), c) for f, c in contagem_frame.most_common(top_n)
         ],
-        "areas_predominantes": [a for a, _ in contagem_area.most_common(top_n)],
+        "areas_predominantes": contagem_area.most_common(top_n),
         "abrangencia_predominante": abrangencia_predominante,
-        "instituicoes_mais_visiveis": [i for i, _ in contagem_instituicoes.most_common(top_n)],
-        "pessoas_mais_visiveis": [p for p, _ in contagem_pessoas.most_common(top_n)],
+        "instituicoes_mais_visiveis": contagem_instituicoes.most_common(top_n),
+        "pessoas_mais_visiveis": contagem_pessoas.most_common(top_n),
         "n_materias": len(df_com_keywords),
     }
 
@@ -391,8 +423,8 @@ def carregar_keywords():
         df_kw = pd.read_csv("materias_keywords.csv", encoding="utf-8-sig")
     except FileNotFoundError:
         return None
-    except Exception as e:
-        st.sidebar.warning(f"Erro ao ler materias_keywords.csv: {e}")
+    except Exception:
+        st.sidebar.warning("Não foi possível carregar a classificação por IA das matérias.")
         return None
 
     colunas_esperadas = [
@@ -401,11 +433,7 @@ def carregar_keywords():
     ]
     colunas_faltando = [c for c in colunas_esperadas if c not in df_kw.columns]
     if colunas_faltando:
-        st.sidebar.warning(
-            "materias_keywords.csv está num formato antigo ou incompleto "
-            f"(faltando: {', '.join(colunas_faltando)}). Rode "
-            "extrair_keywords.py para atualizar."
-        )
+        st.sidebar.warning("A classificação por IA das matérias está desatualizada e precisa ser reprocessada.")
         return None
 
     def _parse_lista(valor):
@@ -498,6 +526,24 @@ def agrupar_por_escala(df, escala, coluna_valor=None):
 df_original = carregar_dados()
 df = df_original.copy()
 
+# Calculado logo após o carregamento (não depende de nenhum filtro da
+# sidebar) para poder exibir o frescor dos dados já no cabeçalho — antes,
+# essa informação só aparecia navegando até uma seção específica.
+data_mais_recente_dt = df_original["date_dt"].max()
+data_mais_recente_str = (
+    data_mais_recente_dt.strftime("%d/%m/%Y") if pd.notna(data_mais_recente_dt) else None
+)
+
+if data_mais_recente_str:
+    dias_desde_atualizacao = (pd.Timestamp.now().normalize() - data_mais_recente_dt).days
+    if dias_desde_atualizacao <= 1:
+        rotulo_frescor = "🟢"
+    elif dias_desde_atualizacao <= 4:
+        rotulo_frescor = "🟡"
+    else:
+        rotulo_frescor = "🔴"
+    st.caption(f"{rotulo_frescor} Dados atualizados até **{data_mais_recente_str}**")
+
 
 # =========================
 # Filtros
@@ -547,33 +593,41 @@ if len(veiculos_disponiveis) > 1:
 else:
     veiculos_selecionados = veiculos_disponiveis
 
-st.sidebar.subheader("Visualização temporal")
-
-escala = st.sidebar.radio(
-    "Agrupar por",
-    ["Dia", "Mês", "Ano"],
-    index=0
-)
-
 st.sidebar.subheader("Seção")
 
 secao_selecionada = st.sidebar.radio(
     "Escolha a visualização",
     [
-        "Panorama do dia",
+        "Análise IA",
         "Visão geral",
         "Temas",
         "Sismógrafo",
-        "Análise IA",
         "Rede semântica"
     ],
     index=0,
     key="secao_selecionada"
 )
 
+SECOES_COM_AGRUPAMENTO_TEMPORAL = {"Visão geral", "Temas", "Sismógrafo"}
+
+if secao_selecionada in SECOES_COM_AGRUPAMENTO_TEMPORAL:
+    st.sidebar.subheader("Visualização temporal")
+    escala = st.sidebar.radio(
+        "Agrupar por",
+        ["Dia", "Mês", "Ano"],
+        index=0
+    )
+else:
+    # "Análise IA" e "Rede semântica" não usam agrupamento temporal — o
+    # controle fica escondido em vez de aparecer sem nenhum efeito visível
+    # nessas telas. O valor abaixo nunca chega a ser usado por essas
+    # seções (só existe para a variável não ficar indefinida).
+    escala = "Dia"
+
 st.sidebar.caption(
-    "\"Panorama do dia\" sempre mostra o dia mais recente do dataset. As "
-    "demais seções usam o período e a escala selecionados aqui em cima."
+    "\"Análise IA\" sempre traz um resumo do dia mais recente no topo, além da "
+    "análise do período selecionado aqui em cima. As demais seções usam o "
+    "período e a escala selecionados."
 )
 
 st.sidebar.subheader("Busca")
@@ -656,6 +710,15 @@ if df.empty:
 # Panorama IA
 # =========================
 
+def icone_ajuda(texto_explicativo):
+    """Ícone de informação com tooltip nativo do navegador (atributo
+    title, sem precisar de CSS/JS extra) — usado para explicações que não
+    precisam ficar sempre visíveis na tela, só disponíveis a quem quiser
+    passar o cursor por cima. Use junto de um st.markdown(..., unsafe_
+    allow_html=True), não sozinho."""
+    return f'<span title="{html.escape(texto_explicativo)}" style="cursor:help;opacity:0.55;font-size:0.82em;">ⓘ</span>'
+
+
 def card(titulo, itens, icone=""):
     itens_seguros = [html.escape(str(item)) for item in itens]
     html_itens = "".join([f"<span class='tag'>{item}</span>" for item in itens_seguros])
@@ -670,13 +733,70 @@ def card(titulo, itens, icone=""):
     )
 
 
-def mostrar_periodo_no_topo(periodo_label, escala_label):
-    """Exibe um indicador fixo no topo da seção com o período e a escala
-    selecionados na sidebar — para o usuário nunca perder de vista a que
-    período a análise se refere, independente de qual seção está vendo."""
+def card_ranking(titulo, itens_com_contagem, icone=""):
+    """Como card(), mas para rankings de frequência — mostra uma barra de
+    proporção e o número ao lado de cada item, em vez de uma nuvem de
+    chips do mesmo tamanho. Sem isso, dois itens em posições muito
+    diferentes do ranking pareciam visualmente equivalentes (crítica:
+    'ranking sem número não é ranking'). itens_com_contagem é uma lista
+    de tuplas (item, contagem), já ordenada do maior para o menor."""
+    if not itens_com_contagem:
+        card(titulo, [], icone)
+        return
+
+    maximo = max(contagem for _, contagem in itens_com_contagem) or 1
+
+    linhas_html = "".join(
+        f'''<div class="ranking-linha">
+              <div class="ranking-rotulo">{html.escape(str(item))}</div>
+              <div class="ranking-barra-fundo">
+                <div class="ranking-barra-preenchida" style="width:{(contagem / maximo * 100):.0f}%;"></div>
+              </div>
+              <div class="ranking-contagem">{numero_br(contagem)}</div>
+            </div>'''
+        for item, contagem in itens_com_contagem
+    )
+
+    st.markdown(
+        f"""
+        <div class="card-panorama">
+            <div class="card-titulo">{icone} {html.escape(titulo)}</div>
+            <div class="ranking-lista">{linhas_html}</div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+
+LIMIAR_AMOSTRA_PEQUENA = 10
+
+
+def avisar_se_amostra_pequena(n_materias, contexto="esta classificação"):
+    """Um ranking sobre poucas matérias é ruído, não sinal — mas a
+    interface não distinguia visualmente 'predominante entre 3 matérias'
+    de 'predominante entre 300'. Mostra um aviso discreto quando a
+    amostra é pequena, para o usuário calibrar a confiança do que está
+    vendo (mesmo espírito do teste de significância já usado nos
+    'Termos em ascensão', só que aqui é um limiar simples de tamanho)."""
+    if n_materias < LIMIAR_AMOSTRA_PEQUENA:
+        st.caption(
+            f"⚠ Baseado em poucas matérias (n={n_materias}) para {contexto} — "
+            "leia os rankings abaixo com cautela."
+        )
+
+
+def mostrar_periodo_no_topo(periodo_label, escala_label=None):
+    """Exibe um indicador fixo no topo da seção com o período selecionado
+    na sidebar — para o usuário nunca perder de vista a que período a
+    análise se refere, independente de qual seção está vendo. escala_label
+    é omitida quando a seção atual não usa agrupamento temporal (Dia/Mês/
+    Ano), para não mostrar um valor que não influencia nada nessa tela."""
+    sufixo_escala = (
+        f" · agrupado por {html.escape(escala_label).lower()}" if escala_label else ""
+    )
     st.markdown(
         f'<div class="painel-eyebrow">📅 Período selecionado: '
-        f'{html.escape(periodo_label)} · agrupado por {html.escape(escala_label).lower()}</div>',
+        f'{html.escape(periodo_label)}{sufixo_escala}</div>',
         unsafe_allow_html=True
     )
 
@@ -748,6 +868,50 @@ st.markdown(
         font-size: 0.88rem;
         line-height: 1.2;
     }
+
+    /* Rankings com peso visível (card_ranking) — barra de proporção +
+    número ao lado de cada item, para não esconder a magnitude relativa
+    entre o 1º e o último colocado do ranking. */
+    .ranking-lista {
+        display: flex;
+        flex-direction: column;
+        gap: 7px;
+    }
+    .ranking-linha {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+    }
+    .ranking-rotulo {
+        flex: 0 0 auto;
+        max-width: 46%;
+        font-size: 0.84rem;
+        color: var(--obs-paper);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    .ranking-barra-fundo {
+        flex: 1 1 auto;
+        height: 12px;
+        background: rgba(95,191,160,0.08);
+        border-radius: 6px;
+        overflow: hidden;
+    }
+    .ranking-barra-preenchida {
+        height: 100%;
+        background: var(--obs-teal);
+        border-radius: 6px;
+        min-width: 3px;
+    }
+    .ranking-contagem {
+        flex: 0 0 auto;
+        min-width: 28px;
+        text-align: right;
+        font-family: 'SF Mono', 'Cascadia Code', Consolas, Menlo, monospace;
+        font-size: 0.78rem;
+        color: var(--obs-muted);
+    }
     .insight-box {
         background: var(--obs-ink-2);
         border: 1px solid var(--obs-grid);
@@ -800,17 +964,11 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-data_mais_recente_dt = df_original["date_dt"].max()
-data_mais_recente_str = (
-    data_mais_recente_dt.strftime("%d/%m/%Y") if pd.notna(data_mais_recente_dt) else None
-)
-
 analises_diarias = carregar_analise_diaria()
 df_keywords = carregar_keywords()
 
 # Matérias de hoje já respeitando o filtro de veículo da sidebar — usada
-# tanto para a agregação de enquadramento/área/abrangência/instituições/
-# pessoas quanto para o sorteio de matérias mais abaixo nesta seção.
+# no sorteio de matérias na parte "Hoje" da seção Análise IA.
 df_hoje_filtrado = (
     df_original[
         (df_original["date_dt"] == data_mais_recente_dt)
@@ -818,18 +976,6 @@ df_hoje_filtrado = (
     ]
     if pd.notna(data_mais_recente_dt) else df_original.iloc[0:0]
 )
-
-if df_keywords is not None and not df_hoje_filtrado.empty:
-    df_hoje_com_keywords = df_hoje_filtrado.merge(
-        df_keywords[[
-            "url", "frame_predominante", "area", "abrangencia",
-            "instituicoes_lista", "pessoas_lista"
-        ]],
-        left_on="URL", right_on="url", how="inner"
-    )
-    resultado_panorama = agregar_classificacoes_materias(df_hoje_com_keywords)
-else:
-    resultado_panorama = None
 
 resultado_tendencia_hoje = agregar_analises_periodo(
     analises_diarias,
@@ -865,13 +1011,47 @@ ritmo_atual, ritmo_historico, razao_temperatura = calcular_temperatura_cobertura
     chave_cache_temperatura
 )
 
+NOMES_DIA_SEMANA = ["segunda-feira", "terça-feira", "quarta-feira", "quinta-feira",
+                    "sexta-feira", "sábado", "domingo"]
+
+
+@st.cache_data
+def calcular_ritmo_por_dia_semana(chave_cache):
+    """Ritmo histórico médio de matérias/dia, separado por dia da semana.
+    Mídia costuma publicar menos ciência aos fins de semana — comparar um
+    domingo contra a média geral (dominada por dias de semana, tipicamente
+    com volume maior) faria qualquer domingo normal parecer sistematicamente
+    'abaixo do ritmo', mesmo sem nada de anormal acontecendo. Comparar cada
+    dia contra a média histórica DAQUELE MESMO dia da semana evita esse viés."""
+    serie_historica = agrupar_por_escala(df_original, "Dia")
+    dias_semana = serie_historica["date_dt"].dt.dayofweek
+    medias = serie_historica.groupby(dias_semana)["Matérias"].mean()
+    return medias.to_dict()
+
+
+chave_cache_ritmo_semana = (len(df_original), df_original["date_dt"].min(), df_original["date_dt"].max())
+ritmo_por_dia_semana = calcular_ritmo_por_dia_semana(chave_cache_ritmo_semana)
+
 # Ritmo do dia mais recente (não depende do filtro da sidebar): compara o
-# volume de matérias do dia com a média histórica diária do corpus inteiro.
+# volume de matérias do dia com a média histórica do MESMO DIA DA SEMANA
+# (não a média geral do corpus) — ver calcular_ritmo_por_dia_semana acima.
 n_materias_hoje = (
     int((df_original["date_dt"] == data_mais_recente_dt).sum())
     if pd.notna(data_mais_recente_dt) else 0
 )
-razao_dia = n_materias_hoje / ritmo_historico if ritmo_historico > 0 else 1.0
+
+if pd.notna(data_mais_recente_dt):
+    dia_semana_hoje = data_mais_recente_dt.dayofweek
+    nome_dia_semana_hoje = NOMES_DIA_SEMANA[dia_semana_hoje]
+    ritmo_historico_dia_semana_hoje = ritmo_por_dia_semana.get(dia_semana_hoje, ritmo_historico)
+else:
+    nome_dia_semana_hoje = ""
+    ritmo_historico_dia_semana_hoje = ritmo_historico
+
+razao_dia = (
+    n_materias_hoje / ritmo_historico_dia_semana_hoje
+    if ritmo_historico_dia_semana_hoje > 0 else 1.0
+)
 
 
 GAUGE_HTML_TEMPLATE = """
@@ -944,7 +1124,7 @@ GAUGE_HTML_TEMPLATE = """
     <div class="gauge-status">__STATUS__</div>
     <div class="gauge-detalhe">
       __ROTULO_VALOR__ ▸ __RITMO_ATUAL__ matéria(s)/dia<br/>
-      Histórico do corpus ▸ __RITMO_HISTORICO__ matéria(s)/dia<br/>
+      __ROTULO_HISTORICO__ ▸ __RITMO_HISTORICO__ matéria(s)/dia<br/>
       Variação ▸ __DIFERENCA__% vs. histórico
     </div>
   </div>
@@ -963,10 +1143,15 @@ GAUGE_HTML_TEMPLATE = """
 """
 
 
-def renderizar_gauge_ritmo(eyebrow, rotulo_valor, ritmo_valor, ritmo_hist, razao, altura=200):
+def renderizar_gauge_ritmo(eyebrow, rotulo_valor, ritmo_valor, ritmo_hist, razao,
+                            altura=200, rotulo_historico="Histórico do corpus"):
     """Renderiza o gauge de ritmo de publicação. Reutilizável para qualquer
     par (valor atual, valor histórico) — usado tanto para o dia mais recente
-    quanto para o período filtrado pelo usuário."""
+    quanto para o período filtrado pelo usuário. rotulo_historico deixa
+    explícito A QUE o valor histórico se refere — importante desde que o
+    gauge de "hoje" passou a comparar contra a média do MESMO DIA DA SEMANA
+    (não mais a média geral do corpus), para não ficar ambíguo qual
+    histórico está sendo mostrado."""
     razao_clamp = max(0.0, min(razao, 2.0))
     angulo_final = (razao_clamp / 2.0) * 180 - 90
 
@@ -986,6 +1171,7 @@ def renderizar_gauge_ritmo(eyebrow, rotulo_valor, ritmo_valor, ritmo_hist, razao
         GAUGE_HTML_TEMPLATE
         .replace("__EYEBROW__", html.escape(eyebrow))
         .replace("__ROTULO_VALOR__", html.escape(rotulo_valor))
+        .replace("__ROTULO_HISTORICO__", html.escape(rotulo_historico))
         .replace("__COR_STATUS__", cor_status)
         .replace("__STATUS__", html.escape(status))
         .replace("__RITMO_ATUAL__", f"{ritmo_valor:.1f}".replace(".", ","))
@@ -998,162 +1184,10 @@ def renderizar_gauge_ritmo(eyebrow, rotulo_valor, ritmo_valor, ritmo_hist, razao
 
 
 # =========================
-# Seção "Panorama do dia" — uma opção do menu lateral, como as demais.
-# Só aparece quando selecionada (deixa de disputar espaço com as seções
-# dependentes do período quando o usuário troca de visualização).
+# "Panorama do dia" foi fundido dentro da seção "Análise IA" (mais abaixo)
+# — deixou de ser uma opção separada do menu lateral, para não duplicar os
+# cards de classificação que antes apareciam idênticos nas duas seções.
 # =========================
-
-if secao_selecionada == "Panorama do dia":
-    st.markdown('<div class="painel-eyebrow">Panorama do dia</div>', unsafe_allow_html=True)
-    st.subheader(f"📌 Panorama da cobertura — {data_mais_recente_str}")
-    st.caption(
-        f"{numero_br(n_materias_hoje)} matéria(s) publicadas em {data_mais_recente_str} "
-        "(todos os veículos). Este painel sempre mostra o dia mais recente do dataset, "
-        "independente do período selecionado na barra lateral — mas os cards de "
-        "classificação abaixo respeitam o filtro de veículo, se aplicado."
-    )
-
-    renderizar_gauge_ritmo(
-        "Ritmo de publicação (hoje)",
-        "Dia mais recente",
-        n_materias_hoje, ritmo_historico, razao_dia
-    )
-
-    if resultado_panorama:
-        col_a, col_b, col_c = st.columns(3)
-
-        with col_a:
-            card(
-                "Enquadramentos",
-                resultado_panorama["enquadramentos_predominantes"],
-                "📰"
-            )
-            card(
-                "Instituições mais visíveis",
-                resultado_panorama["instituicoes_mais_visiveis"],
-                "🏛️"
-            )
-
-        with col_b:
-            card(
-                "Áreas predominantes",
-                resultado_panorama["areas_predominantes"],
-                "🔬"
-            )
-            card(
-                "Pessoas mais visíveis",
-                resultado_panorama["pessoas_mais_visiveis"],
-                "👤"
-            )
-
-        with col_c:
-            card(
-                "Abrangência",
-                [resultado_panorama["abrangencia_predominante"]],
-                "🌎"
-            )
-    else:
-        aviso_data = data_mais_recente_str or "o dia mais recente do dataset"
-        if len(veiculos_selecionados) < len(veiculos_disponiveis):
-            st.info(
-                f"Nenhum veículo selecionado na barra lateral publicou matéria em "
-                f"{aviso_data}, ou a classificação por IA dessas matérias ainda não "
-                "foi gerada (rode: python extrair_keywords.py)."
-            )
-        else:
-            st.info(
-                f"Classificação de IA ainda não gerada para as matérias de "
-                f"{aviso_data} (rode: python extrair_keywords.py)."
-            )
-
-    if resultado_tendencia_hoje:
-        tendencias_hoje = resultado_tendencia_hoje["tendencias_diarias"]
-
-        if len(tendencias_hoje) == 1:
-            _, _, texto_tendencia = tendencias_hoje[0]
-            st.markdown(
-                f"""
-                <div class="insight-box">
-                    <div class="insight-title">📈 Tendência do dia</div>
-                    {html.escape(texto_tendencia)}
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
-        elif len(tendencias_hoje) > 1:
-            linhas_tendencia_html = "".join(
-                f'<p style="margin:0 0 10px 0;"><b>{html.escape(veiculo)}:</b> {html.escape(texto)}</p>'
-                for _, veiculo, texto in tendencias_hoje
-            )
-            st.markdown(
-                f"""
-                <div class="insight-box">
-                    <div class="insight-title">📈 Tendência do dia (por veículo)</div>
-                    {linhas_tendencia_html}
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
-    else:
-        st.caption(
-            "📈 Tendência do dia ainda não gerada para este dia/veículo "
-            "(rode: python analise_diaria.py)."
-        )
-
-    st.divider()
-
-    col_titulo_sorteio, col_botao_sorteio = st.columns([4, 1])
-    with col_titulo_sorteio:
-        st.markdown("#### 🎲 Três matérias do dia, para começar por algum lugar")
-    with col_botao_sorteio:
-        sortear_novamente = st.button("🔀 Sortear outras", key="btn_sortear_materias")
-
-    df_dia_completo = df_hoje_filtrado
-
-    precisa_sortear = (
-        sortear_novamente
-        or "materias_aleatorias_data" not in st.session_state
-        or st.session_state.get("materias_aleatorias_data") != data_mais_recente_str
-    )
-
-    if precisa_sortear:
-        n_amostra = min(3, len(df_dia_completo))
-        st.session_state["materias_aleatorias"] = (
-            df_dia_completo.sample(n=n_amostra) if n_amostra > 0 else df_dia_completo
-        )
-        st.session_state["materias_aleatorias_data"] = data_mais_recente_str
-
-    materias_amostra = st.session_state.get("materias_aleatorias")
-
-    if materias_amostra is None or materias_amostra.empty:
-        st.caption("Nenhuma matéria disponível para sorteio neste dia.")
-    else:
-        cols_materias = st.columns(len(materias_amostra))
-        for col, (_, materia) in zip(cols_materias, materias_amostra.iterrows()):
-            with col:
-                titulo_materia = html.escape(str(materia["Título"]) or "(sem título)")
-                editoria_materia = html.escape(str(materia["Editoria"]) or "—")
-                autor_materia = html.escape(materia["Autor"] or "Redação")
-                url_materia = str(materia["URL"])
-
-                if url_materia.startswith("http"):
-                    titulo_html = f'<a href="{url_materia}" target="_blank" style="color:#E8E4D8;text-decoration:none;">{titulo_materia}</a>'
-                else:
-                    titulo_html = titulo_materia
-
-                st.markdown(
-                    f"""
-                    <div class="card-panorama" style="min-height:130px;">
-                        <div style="font-family:'SF Mono',Consolas,monospace;font-size:0.7rem;
-                                    color:#8B93A7;text-transform:uppercase;letter-spacing:0.05em;
-                                    margin-bottom:8px;">{editoria_materia}</div>
-                        <div style="font-weight:600;margin-bottom:10px;line-height:1.4;">{titulo_html}</div>
-                        <div style="font-size:0.8rem;color:#8B93A7;font-style:italic;">{autor_materia}</div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True
-                )
-
 
 st.divider()
 
@@ -1175,7 +1209,11 @@ if secao_selecionada == "Visão geral":
     st.divider()
 
     if len(veiculos_disponiveis) > 1:
-        st.subheader("Comparação por veículo")
+        st.markdown(
+            f"### Comparação por veículo "
+            f"{icone_ajuda('Contagem bruta mistura dois efeitos: foco editorial real em ciência e profundidade do histórico coletado por cada fonte (algumas têm mais dias de backfill que outras). A coluna Matérias/dia e o modo normalizado do gráfico dividem pelo número de dias efetivamente cobertos por cada veículo, para uma comparação mais justa.')}",
+            unsafe_allow_html=True
+        )
 
         por_veiculo = (
             df.groupby("Veículo")
@@ -1183,18 +1221,53 @@ if secao_selecionada == "Visão geral":
             .reset_index()
         )
         por_veiculo["Média_palavras"] = por_veiculo["Média_palavras"].round(0).fillna(0).astype(int)
-        por_veiculo.columns = ["Veículo", "Matérias", "Média de palavras"]
+
+        # Dias efetivamente cobertos por CADA veículo dentro do período
+        # filtrado (não o período filtrado inteiro) — evita que um veículo
+        # com backfill mais raso pareça artificialmente menor só por ter
+        # menos dias de histórico no acervo.
+        cobertura_por_veiculo = df.groupby("Veículo")["date_dt"].agg(["min", "max"])
+        cobertura_por_veiculo["Dias_cobertos"] = (
+            (cobertura_por_veiculo["max"] - cobertura_por_veiculo["min"]).dt.days + 1
+        )
+        por_veiculo = por_veiculo.merge(
+            cobertura_por_veiculo[["Dias_cobertos"]], on="Veículo", how="left"
+        )
+        por_veiculo["Matérias/dia"] = (
+            por_veiculo["Matérias"] / por_veiculo["Dias_cobertos"]
+        ).round(2)
+
+        por_veiculo.columns = [
+            "Veículo", "Matérias", "Média de palavras", "Dias cobertos", "Matérias/dia"
+        ]
         por_veiculo = por_veiculo.sort_values("Matérias", ascending=False)
 
         col_tabela_veiculo, col_grafico_veiculo = st.columns([1, 2])
 
         with col_tabela_veiculo:
-            st.dataframe(por_veiculo, use_container_width=True, hide_index=True)
+            st.dataframe(
+                por_veiculo[["Veículo", "Matérias", "Matérias/dia", "Média de palavras"]],
+                use_container_width=True, hide_index=True
+            )
 
         with col_grafico_veiculo:
+            modo_comparacao = st.radio(
+                "Comparar por",
+                ["Contagem bruta", "Normalizado (matérias/dia)"],
+                horizontal=True,
+                key="modo_comparacao_veiculo"
+            )
+            coluna_valor_pizza = (
+                "Matérias" if modo_comparacao == "Contagem bruta" else "Matérias/dia"
+            )
+            titulo_pizza = (
+                "Participação por veículo (nº bruto de matérias)"
+                if modo_comparacao == "Contagem bruta"
+                else "Participação por veículo (matérias/dia coberto — normalizado)"
+            )
             fig_veiculo_pizza = px.pie(
-                por_veiculo, names="Veículo", values="Matérias",
-                title="Participação por veículo no período filtrado", hole=0.4
+                por_veiculo, names="Veículo", values=coluna_valor_pizza,
+                title=titulo_pizza, hole=0.4
             )
             st.plotly_chart(fig_veiculo_pizza, use_container_width=True)
 
@@ -1271,29 +1344,84 @@ if secao_selecionada == "Visão geral":
     st.plotly_chart(fig_editoria, use_container_width=True)
 
     st.divider()
-    st.subheader("Textos mais longos")
 
-    tabela = df[["Data", "Título", "Editoria", "Autor", "Palavras", "URL"]].copy()
-    tabela = tabela.sort_values("Palavras", ascending=False)
+    col_titulo_amostra, col_slider_amostra, col_botao_amostra = st.columns([3, 2, 1])
+    with col_titulo_amostra:
+        st.subheader("Amostra de matérias do período")
+    with col_slider_amostra:
+        tamanho_amostra = st.slider(
+            "Quantidade de matérias",
+            min_value=5, max_value=30, value=15,
+            key="tamanho_amostra_visao_geral"
+        )
+    with col_botao_amostra:
+        st.markdown("<br>", unsafe_allow_html=True)
+        sortear_amostra_novamente = st.button("🔀 Sortear outras", key="btn_sortear_amostra_visao_geral")
 
-    st.dataframe(
-        tabela,
-        use_container_width=True,
-        hide_index=True
+    st.caption(
+        "Amostra aleatória do período/busca/veículo filtrados — não é um ranking "
+        "por nenhuma métrica. Clique em qualquer coluna da tabela para reordenar "
+        "como quiser."
     )
+
+    chave_amostra_atual = (
+        len(df), df["date_dt"].min(), df["date_dt"].max(),
+        tuple(sorted(veiculos_selecionados)), busca, tamanho_amostra
+    )
+
+    precisa_sortear_amostra = (
+        sortear_amostra_novamente
+        or "amostra_visao_geral_chave" not in st.session_state
+        or st.session_state.get("amostra_visao_geral_chave") != chave_amostra_atual
+    )
+
+    if precisa_sortear_amostra:
+        n_amostra_visao_geral = min(tamanho_amostra, len(df))
+        st.session_state["amostra_visao_geral"] = (
+            df.sample(n=n_amostra_visao_geral) if n_amostra_visao_geral > 0 else df.iloc[0:0]
+        )
+        st.session_state["amostra_visao_geral_chave"] = chave_amostra_atual
+
+    tabela_amostra = st.session_state.get("amostra_visao_geral")
+
+    if tabela_amostra is None or tabela_amostra.empty:
+        st.caption("Nenhuma matéria disponível para amostragem com os filtros atuais.")
+    else:
+        tabela = tabela_amostra[["Data", "Título", "Editoria", "Autor", "Palavras", "URL"]].copy()
+
+        st.dataframe(
+            tabela,
+            use_container_width=True,
+            hide_index=True
+        )
 
 
 if secao_selecionada == "Temas":
     mostrar_periodo_no_topo(periodo_label_sidebar, escala)
 
+    st.markdown('<div class="painel-eyebrow">Temas</div>', unsafe_allow_html=True)
+    with st.expander("📖 Como ler esta seção (4 formas diferentes de medir o mesmo assunto)"):
+        st.markdown(
+            "Esta seção reúne 4 formas diferentes de responder \"do que a mídia "
+            "está falando\", cada uma com um método distinto — elas vão discordar "
+            "entre si às vezes, porque medem coisas diferentes.\n\n"
+            "- **Palavras-chave (IA)** captam *conceito* — a IA lê cada matéria e "
+            "extrai termos relevantes, descartando ruído.\n"
+            "- **Termos em ascensão** são as mesmas palavras-chave, mas testadas "
+            "estatisticamente para detectar o que está *acelerando*, não só o que "
+            "é mais frequente.\n"
+            "- **N-gramas** (palavras/bigramas/trigramas) captam *frequência "
+            "literal* de texto — mais bruto, sem julgamento de relevância, mas "
+            "não depende de IA.\n"
+            "- **Animações por mês** mostram qualquer uma das anteriores "
+            "evoluindo no tempo."
+        )
 
     if df_keywords is not None:
-        st.subheader("🧠 Palavras-chave identificadas por IA")
-        st.caption(
-            "Extraídas via modelo de linguagem a partir do conteúdo de cada matéria "
-            "(ver extrair_keywords.py) — tendem a ser mais específicas do que a "
-            "contagem bruta de palavras e n-gramas abaixo, já que descartam termos "
-            "genéricos e mantêm conceitos, instituições, tecnologias e atores."
+        st.markdown(
+            f"### 🧠 Palavras-chave identificadas por IA "
+            f"{icone_ajuda('Extraídas via modelo de linguagem a partir do conteúdo de cada matéria — tendem a ser mais específicas que a contagem bruta de palavras e n-gramas abaixo, já que descartam termos genéricos e mantêm conceitos, instituições, tecnologias e atores.')}",
+            unsafe_allow_html=True
         )
 
         urls_filtradas = set(df["URL"]) - {""}
@@ -1302,8 +1430,8 @@ if secao_selecionada == "Temas":
         if kw_filtrado.empty:
             st.info(
                 "Nenhuma matéria do período/busca filtrados possui palavras-chave "
-                "extraídas ainda. Rode extrair_keywords.py para atualizar "
-                "materias_keywords.csv, ou amplie os filtros na barra lateral."
+                "extraídas ainda. Amplie os filtros na barra lateral, ou aguarde o "
+                "próximo processamento."
             )
         else:
             todas_kw = [
@@ -1381,17 +1509,10 @@ if secao_selecionada == "Temas":
 
         st.divider()
 
-        st.subheader("📈 Termos em ascensão")
-        st.caption(
-            "Diferente do ranking acima (que mostra o que já está em alta), esta "
-            "seção compara a taxa de menções de cada palavra-chave na janela mais "
-            "recente do período filtrado com a taxa no restante do período — "
-            "sinalizando temas que estão acelerando, mesmo que ainda não tenham "
-            "volume alto o suficiente para aparecer no topo do ranking geral. "
-            "O ranking usa um teste estatístico de significância (não percentual "
-            "bruto), para não confundir ruído de amostra pequena (ex: 1 menção "
-            "virar 2, um salto de \"+100%\" que não significa nada) com um "
-            "aumento genuíno."
+        st.markdown(
+            f"### 📈 Termos em ascensão "
+            f"{icone_ajuda('Diferente do ranking acima (que mostra o que já está em alta), compara a taxa de menções de cada palavra-chave na janela mais recente do período com a taxa no restante — sinaliza temas acelerando mesmo sem volume alto. Usa um teste estatístico de significância (não percentual bruto), para não confundir ruído de amostra pequena (1 menção virar 2 = +100%, sem significar nada) com aumento genuíno.')}",
+            unsafe_allow_html=True
         )
 
         col_janela, col_topn, col_sensibilidade = st.columns(3)
@@ -1584,8 +1705,9 @@ if secao_selecionada == "Temas":
 
     else:
         st.info(
-            "O arquivo materias_keywords.csv ainda não foi encontrado. "
-            "Rode extrair_keywords.py para habilitar as palavras-chave por IA nesta aba."
+            "As palavras-chave por IA ainda não estão disponíveis para as matérias "
+            "deste dataset — essa análise é gerada em etapas de processamento "
+            "separadas do app."
         )
         st.divider()
 
@@ -1807,11 +1929,10 @@ if secao_selecionada == "Temas":
 
     if df_keywords is not None:
         st.divider()
-        st.subheader("🧠 Top palavras-chave animado por mês (IA)")
-        st.caption(
-            "Mesma ideia da animação acima, mas usando as palavras-chave extraídas "
-            "por IA em vez de n-gramas — costuma mostrar uma evolução mais limpa "
-            "dos temas, sem ruído de palavras genéricas."
+        st.markdown(
+            f"### 🧠 Top palavras-chave animado por mês (IA) "
+            f"{icone_ajuda('Mesma ideia da animação acima, mas usando as palavras-chave extraídas por IA em vez de n-gramas — costuma mostrar uma evolução mais limpa dos temas, sem ruído de palavras genéricas.')}",
+            unsafe_allow_html=True
         )
 
         top_animacao_kw = st.slider(
@@ -1910,10 +2031,10 @@ if secao_selecionada == "Temas":
 if secao_selecionada == "Sismógrafo":
     mostrar_periodo_no_topo(periodo_label_sidebar, escala)
 
-    st.subheader("📡 Sismógrafo de cobertura")
-    st.caption(
-        "Detecta automaticamente os picos de publicação no período filtrado "
-        "e transforma cada um em um boletim — a matéria mais representativa daquele momento."
+    st.markdown(
+        f"### 📡 Sismógrafo de cobertura "
+        f"{icone_ajuda('Detecta automaticamente os picos de publicação no período filtrado e transforma cada um em um boletim — a matéria mais representativa daquele momento.')}",
+        unsafe_allow_html=True
     )
 
     n_eventos = st.slider(
@@ -2282,20 +2403,171 @@ if secao_selecionada == "Sismógrafo":
 
 
 if secao_selecionada == "Análise IA":
-    mostrar_periodo_no_topo(periodo_label_sidebar, escala)
-    st.subheader("Análise estruturada por IA")
+    st.markdown('<div class="painel-eyebrow">Análise IA</div>', unsafe_allow_html=True)
+    st.subheader("🧠 Análise estruturada por IA")
+
+    # =========================
+    # Parte 1: pulso de hoje — compacto, sempre o dia mais recente do
+    # dataset, independente do período selecionado na barra lateral.
+    # =========================
+    st.markdown(f"#### 📌 Hoje — {data_mais_recente_str}")
     st.caption(
-        "Enquadramento, área, abrangência, instituições e pessoas são agregados "
-        "(sem nenhuma chamada de IA nova) a partir da classificação por matéria já "
-        "gerada em extrair_keywords.py — filtrar aqui não tem custo adicional. Só a "
-        "tendência do período usa análises diárias pré-geradas (analise_diaria.jsonl) "
-        "e a síntese abaixo é sob demanda (1 chamada de IA)."
+        f"{numero_br(n_materias_hoje)} matéria(s) publicadas em {data_mais_recente_str} "
+        f"({nome_dia_semana_hoje}, todos os veículos). Este resumo sempre mostra o dia "
+        "mais recente do dataset."
+    )
+
+    renderizar_gauge_ritmo(
+        "Ritmo de publicação (hoje)",
+        f"Hoje ({nome_dia_semana_hoje})",
+        n_materias_hoje, ritmo_historico_dia_semana_hoje, razao_dia,
+        rotulo_historico=f"Histórico de {nome_dia_semana_hoje}s"
+    )
+    st.markdown(
+        f'<span style="font-size:0.85rem;color:#8B93A7;">📊 Comparado à média histórica '
+        f'de <b>{nome_dia_semana_hoje}s</b> especificamente '
+        f'({ritmo_historico_dia_semana_hoje:.1f} matéria(s)/dia)</span> '
+        f'{icone_ajuda("Não a média geral do corpus — mídia costuma publicar menos ciência aos fins de semana, então comparar contra a média geral penalizaria domingos e sábados injustamente.")}',
+        unsafe_allow_html=True
+    )
+
+    if resultado_tendencia_hoje:
+        tendencias_hoje = resultado_tendencia_hoje["tendencias_diarias"]
+
+        if len(tendencias_hoje) == 1:
+            _, _, texto_tendencia = tendencias_hoje[0]
+            st.markdown(
+                f"""
+                <div class="insight-box">
+                    <div class="insight-title">📈 Tendência do dia</div>
+                    {html.escape(texto_tendencia)}
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+        elif len(tendencias_hoje) > 1:
+            linhas_tendencia_html = "".join(
+                f'<p style="margin:0 0 10px 0;"><b>{html.escape(veiculo)}:</b> {html.escape(texto)}</p>'
+                for _, veiculo, texto in tendencias_hoje
+            )
+            st.markdown(
+                f"""
+                <div class="insight-box">
+                    <div class="insight-title">📈 Tendência do dia (por veículo)</div>
+                    {linhas_tendencia_html}
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+    else:
+        st.caption(
+            "📈 Tendência do dia ainda não disponível para este dia/veículo."
+        )
+
+    col_titulo_sorteio, col_botao_sorteio = st.columns([4, 1])
+    with col_botao_sorteio:
+        sortear_novamente = st.button("🔀 Sortear outras", key="btn_sortear_materias")
+
+    df_dia_completo = df_hoje_filtrado
+
+    # Chave de cache inclui a seleção de veículos, não só a data — sem
+    # isso, trocar o filtro de veículo não invalidava o sorteio, e podia
+    # continuar mostrando matérias de fora do filtro atual (ou travado em
+    # menos matérias do que realmente havia disponível para o novo filtro).
+    chave_sorteio_atual = (data_mais_recente_str, tuple(sorted(veiculos_selecionados)))
+
+    precisa_sortear = (
+        sortear_novamente
+        or "materias_aleatorias_chave" not in st.session_state
+        or st.session_state.get("materias_aleatorias_chave") != chave_sorteio_atual
+    )
+
+    if precisa_sortear:
+        n_amostra = min(3, len(df_dia_completo))
+        st.session_state["materias_aleatorias"] = (
+            df_dia_completo.sample(n=n_amostra) if n_amostra > 0 else df_dia_completo
+        )
+        st.session_state["materias_aleatorias_chave"] = chave_sorteio_atual
+
+    materias_amostra = st.session_state.get("materias_aleatorias")
+    n_mostradas = 0 if materias_amostra is None else len(materias_amostra)
+
+    with col_titulo_sorteio:
+        if n_mostradas == 3:
+            st.markdown("##### 🎲 Três matérias do dia, para começar por algum lugar")
+        elif n_mostradas > 0:
+            st.markdown(
+                f"##### 🎲 {n_mostradas} matéria(s) do dia, para começar por algum lugar"
+            )
+        else:
+            st.markdown("##### 🎲 Matérias do dia, para começar por algum lugar")
+
+    if materias_amostra is None or materias_amostra.empty:
+        st.caption(
+            "Nenhuma matéria disponível para sorteio neste dia, com o filtro de "
+            "veículo atual."
+        )
+    else:
+        cols_materias = st.columns(len(materias_amostra))
+        for col, (_, materia) in zip(cols_materias, materias_amostra.iterrows()):
+            with col:
+                titulo_materia = html.escape(str(materia["Título"]) or "(sem título)")
+                editoria_materia = html.escape(str(materia["Editoria"]) or "—")
+                veiculo_materia = html.escape(str(materia.get("Veículo", "")) or "—")
+                autor_materia = html.escape(materia["Autor"] or "Redação")
+                url_materia = str(materia["URL"])
+                imagem_materia = str(materia.get("Imagem", "")).strip()
+
+                if url_materia.startswith("http"):
+                    titulo_html = f'<a href="{url_materia}" target="_blank" style="color:#E8E4D8;text-decoration:none;">{titulo_materia}</a>'
+                else:
+                    titulo_html = titulo_materia
+
+                if imagem_materia.startswith("http"):
+                    # Miniatura à esquerda, largura fixa e altura contida —
+                    # o texto (título, editoria, autor) fica ao lado, à
+                    # direita, em vez de embaixo.
+                    imagem_html = (
+                        f'<img src="{html.escape(imagem_materia)}" alt="" '
+                        f'style="width:96px;height:96px;object-fit:cover;'
+                        f'border-radius:6px;flex-shrink:0;display:block;" '
+                        f'onerror="this.style.display=\'none\';">'
+                    )
+                else:
+                    imagem_html = ""
+
+                st.markdown(
+                    f"""
+                    <div class="card-panorama" style="min-height:130px;display:flex;gap:12px;align-items:flex-start;">
+                        {imagem_html}
+                        <div style="flex:1;min-width:0;">
+                            <div style="font-family:'SF Mono',Consolas,monospace;font-size:0.7rem;
+                                        color:#8B93A7;text-transform:uppercase;letter-spacing:0.05em;
+                                        margin-bottom:8px;">{editoria_materia} · {veiculo_materia}</div>
+                            <div style="font-weight:600;margin-bottom:10px;line-height:1.4;">{titulo_html}</div>
+                            <div style="font-size:0.8rem;color:#8B93A7;font-style:italic;">{autor_materia}</div>
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+
+    st.divider()
+
+    # =========================
+    # Parte 2: análise do período selecionado na barra lateral.
+    # =========================
+    mostrar_periodo_no_topo(periodo_label_sidebar)
+    st.markdown(
+        f"#### 🧬 Análise do período selecionado "
+        f"{icone_ajuda('Enquadramento, área, abrangência, instituições e pessoas são agregados a partir da classificação já feita por matéria — filtrar aqui não tem custo adicional de IA. Só a tendência do período e a síntese abaixo usam uma chamada de IA nova (sob demanda).')}",
+        unsafe_allow_html=True
     )
 
     if df_keywords is None:
         st.warning(
-            "O arquivo materias_keywords.csv ainda não foi encontrado. Rode "
-            "extrair_keywords.py para habilitar esta seção."
+            "A classificação por IA das matérias ainda não está disponível "
+            "para habilitar esta seção."
         )
     else:
         urls_filtradas_ia = set(df["URL"]) - {""}
@@ -2311,7 +2583,7 @@ if secao_selecionada == "Análise IA":
         if not resultado_classificacao:
             st.warning(
                 "Nenhuma matéria do período/busca/veículo filtrados possui "
-                "classificação de IA ainda. Rode extrair_keywords.py para preencher."
+                "classificação de IA ainda."
             )
         else:
             rotulo_veiculo = (
@@ -2322,38 +2594,46 @@ if secao_selecionada == "Análise IA":
                 f"📊 {numero_br(resultado_classificacao['n_materias'])} matéria(s) "
                 f"classificada(s) no período ({rotulo_veiculo})."
             )
+            avisar_se_amostra_pequena(resultado_classificacao["n_materias"], "o período selecionado")
 
             col1, col2 = st.columns(2)
 
             with col1:
-                st.markdown("### Enquadramentos predominantes")
-                for item in resultado_classificacao["enquadramentos_predominantes"]:
-                    st.write(f"• {item}")
-
-                st.markdown("### Áreas predominantes")
-                for item in resultado_classificacao["areas_predominantes"]:
-                    st.write(f"• {item}")
-
-                st.markdown("### Instituições mais visíveis")
-                for item in resultado_classificacao["instituicoes_mais_visiveis"]:
-                    st.write(f"• {item}")
+                card_ranking(
+                    "Enquadramentos predominantes",
+                    resultado_classificacao["enquadramentos_predominantes"],
+                    "📰"
+                )
+                card_ranking(
+                    "Áreas predominantes",
+                    resultado_classificacao["areas_predominantes"],
+                    "🔬"
+                )
 
             with col2:
-                st.markdown("### Pessoas mais visíveis")
-                for item in resultado_classificacao["pessoas_mais_visiveis"]:
-                    st.write(f"• {item}")
+                card_ranking(
+                    "Instituições mais visíveis",
+                    resultado_classificacao["instituicoes_mais_visiveis"],
+                    "🏛️"
+                )
+                card_ranking(
+                    "Pessoas mais visíveis",
+                    resultado_classificacao["pessoas_mais_visiveis"],
+                    "👤"
+                )
 
-                st.markdown("### Abrangência predominante")
-                st.write(f"• {resultado_classificacao['abrangencia_predominante']}")
+            card(
+                "Abrangência predominante",
+                [resultado_classificacao["abrangencia_predominante"]],
+                "🌎"
+            )
 
     st.divider()
 
-    st.markdown("### Tendência do período")
-    st.caption(
-        "Este campo não dá para agregar por contagem — é texto corrido, gerado "
-        "por dia×veículo em analise_diaria.py. Gere uma síntese sob demanda "
-        "(1 chamada de IA, usando só as frases diárias já existentes, não as "
-        "matérias originais)."
+    st.markdown(
+        f"### Tendência do período "
+        f"{icone_ajuda('Texto corrido, gerado por dia×veículo — não dá para agregar por contagem como os outros campos. A síntese abaixo usa 1 chamada de IA sob demanda, aproveitando só as frases diárias já existentes.')}",
+        unsafe_allow_html=True
     )
 
     datas_no_filtro = set(df["Data"].unique())
@@ -2363,8 +2643,7 @@ if secao_selecionada == "Análise IA":
 
     if not resultado_tendencia_periodo:
         st.info(
-            "Nenhuma tendência gerada ainda para os dias/veículos deste período "
-            "(rode: python analise_diaria.py)."
+            "Nenhuma tendência disponível ainda para os dias/veículos deste período."
         )
     else:
         chave_periodo = tuple(resultado_tendencia_periodo["tendencias_diarias"])
@@ -2750,26 +3029,22 @@ cy.on('mouseout', 'node[tipo = "termo"]', function(evt) {{
 
 
 if secao_selecionada == "Rede semântica":
-    mostrar_periodo_no_topo(periodo_label_sidebar, escala)
+    mostrar_periodo_no_topo(periodo_label_sidebar)
 
-    st.subheader("🕸️ Rede semântica de palavras-chave")
-    st.caption(
-        "Grafo de coocorrência das palavras-chave extraídas por IA nas matérias "
-        "do período filtrado na barra lateral — dois termos se conectam quando "
-        "aparecem juntos na mesma matéria. Cores indicam comunidades detectadas "
-        "automaticamente (algoritmo de Louvain). Muda dinamicamente com o filtro, "
-        "sem precisar gerar arquivo nenhum antecipadamente."
+    st.markdown(
+        f"### 🕸️ Rede semântica de palavras-chave "
+        f"{icone_ajuda('Grafo de coocorrência das palavras-chave extraídas por IA nas matérias do período filtrado — dois termos se conectam quando aparecem juntos na mesma matéria. Cores indicam comunidades detectadas automaticamente (algoritmo de Louvain). Atualiza dinamicamente com qualquer filtro.')}",
+        unsafe_allow_html=True
     )
 
     if not REDE_SEMANTICA_DISPONIVEL:
         st.warning(
-            "As bibliotecas networkx e python-louvain não estão instaladas neste "
-            "ambiente. Rode: pip install networkx python-louvain"
+            "A rede semântica não está disponível neste ambiente no momento."
         )
     elif df_keywords is None:
         st.info(
-            "O arquivo materias_keywords.csv ainda não foi encontrado. "
-            "Rode extrair_keywords.py para habilitar a rede semântica."
+            "A classificação por IA das matérias ainda não está disponível "
+            "para habilitar a rede semântica."
         )
     else:
         top_clusters = st.slider(
@@ -2784,7 +3059,7 @@ if secao_selecionada == "Rede semântica":
         if kw_filtrado_rede.empty:
             st.info(
                 "Nenhuma matéria do período/busca filtrados possui palavras-chave "
-                "extraídas. Amplie o filtro na barra lateral ou rode extrair_keywords.py."
+                "extraídas. Amplie o filtro na barra lateral."
             )
         else:
             listas_termos = tuple(
