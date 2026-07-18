@@ -883,8 +883,8 @@ st.markdown(
         gap: 10px;
     }
     .ranking-rotulo {
-        flex: 0 0 auto;
-        max-width: 46%;
+        flex: 0 0 42%;
+        width: 42%;
         font-size: 0.84rem;
         color: var(--obs-paper);
         overflow: hidden;
