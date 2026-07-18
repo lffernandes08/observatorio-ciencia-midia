@@ -1,3 +1,14 @@
+"""
+Gera, por combinação (dia, veículo), uma frase curta resumindo a tendência
+da cobertura daquele dia — o único campo que genuinamente precisa olhar
+várias matérias JUNTAS de uma vez (não dá pra extrair de uma matéria
+isolada, diferente de enquadramento/área/abrangência/instituições/pessoas,
+que migraram para extrair_keywords.py e são decididos matéria por matéria).
+
+Uso:
+    python analise_diaria.py
+"""
+
 import os
 import json
 import re
@@ -8,13 +19,12 @@ from openai import OpenAI
 
 ARQUIVOS_FONTES = ["folha.csv", "cnn_brasil.csv", "bbc_brasil.csv", "g1_globo.csv"]
 ARQUIVO_SAIDA = "analise_diaria.jsonl"
-LIMITE_TEXTO_MATERIA = 2500
+LIMITE_TEXTO_MATERIA = 1500  # só o suficiente para captar o assunto de cada matéria
 
-# Trava de segurança: quantos dias no máximo processar em uma única execução.
-# Importante para cargas de corpus histórico grandes — evita que uma única
-# chamada do script dispare centenas de requisições de uma vez. Rode o
-# script de novo quantas vezes forem necessárias para esgotar a fila.
-MAX_DIAS_POR_EXECUCAO = 30
+# Trava de segurança: quantas combinações (dia, veículo) no máximo processar
+# em uma única execução. Rode o script de novo quantas vezes forem
+# necessárias para esgotar a fila de pendências.
+MAX_COMBINACOES_POR_EXECUCAO = 30
 INTERVALO_ENTRE_CHAMADAS = 2
 
 MODELO = "gpt-4o-mini"
@@ -22,138 +32,51 @@ MODELO = "gpt-4o-mini"
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 
-ENQUADRAMENTOS = [
-    "Nova descoberta científica",
-    "Inovação tecnológica",
-    "Saúde pública",
-    "Medicina e tratamentos",
-    "Meio ambiente",
-    "Política científica",
-    "Divulgação científica",
-    "Risco e incerteza",
-    "Ética científica",
-    "Controvérsia científica",
-    "Impacto econômico",
-    "Biodiversidade e conservação",
-    "Astronomia e espaço",
-    "Energia",
-    "Inteligência artificial",
-    "Perfil de cientistas",
-    "Eventos científicos",
-    "Pandemias e epidemias",
-    "Mudanças climáticas",
-    "Outro"
-]
-
-AREAS = [
-    "Ciências da Saúde",
-    "Ciências Biológicas",
-    "Ciências Exatas e da Terra",
-    "Engenharias",
-    "Ciências Agrárias",
-    "Ciências Ambientais",
-    "Ciências Humanas",
-    "Ciências Sociais Aplicadas",
-    "Linguística, Letras e Artes",
-    "Interdisciplinar",
-    "Outro"
-]
-
-ABRANGENCIA = [
-    "Nacional",
-    "Internacional",
-    "Local",
-    "Regional",
-    "Não conclusivo"
-]
-
-
 def extrair_json(texto):
     texto = texto.strip()
-
     texto = re.sub(r"^```json", "", texto)
     texto = re.sub(r"^```", "", texto)
     texto = re.sub(r"```$", "", texto)
-    texto = texto.strip()
-
-    return json.loads(texto)
+    return json.loads(texto.strip())
 
 
-def montar_texto_materias(df_dia):
+def montar_texto_materias(df_combinacao):
+    """Só título e um recorte curto do texto de cada matéria — o suficiente
+    para a IA identificar do que se tratou o dia, sem precisar do texto
+    completo (esse campo não exige a mesma profundidade de leitura que a
+    classificação por matéria em extrair_keywords.py)."""
     materias = []
 
-    for _, row in df_dia.iterrows():
-        item = f"""
-Veículo: {row.get("veiculo", "Desconhecido")}
-Editoria: {row.get("section", "")}
-Autor: {row.get("author", "")}
-Título: {row.get("title", "")}
-
-Texto:
-{str(row.get("text", ""))[:LIMITE_TEXTO_MATERIA]}
-"""
+    for _, row in df_combinacao.iterrows():
+        item = f"""Título: {row.get("title", "")}
+Resumo: {str(row.get("text", ""))[:LIMITE_TEXTO_MATERIA]}"""
         materias.append(item)
 
     return "\n---\n".join(materias)
 
 
-def analisar_dia(df_dia, data_str):
-    texto_materias = montar_texto_materias(df_dia)
+def gerar_tendencia(df_combinacao, data_str, veiculo):
+    texto_materias = montar_texto_materias(df_combinacao)
 
     prompt = f"""
-Você é pesquisador em jornalismo científico e análise de cobertura jornalística.
+Você é pesquisador em jornalismo científico. Abaixo estão os títulos e
+resumos das matérias de ciência publicadas por {veiculo} no dia {data_str}.
 
-Abaixo estão todas as matérias de ciência publicadas pela Folha no dia {data_str}.
+Escreva uma única frase curta (máximo 30 palavras), em português do
+Brasil, descrevendo a tendência geral da cobertura desse dia — o que
+predominou, sem listar cada matéria individualmente.
 
-Com base apenas nessas matérias, produza um JSON válido, sem markdown, sem
-comentários e sem texto antes ou depois. Use exatamente esta estrutura:
-
-{{
-  "temas_em_destaque": ["tema 1", "tema 2", "tema 3"],
-  "enquadramentos_predominantes": ["item da taxonomia", "item da taxonomia", "item da taxonomia"],
-  "areas_predominantes": ["item da taxonomia", "item da taxonomia", "item da taxonomia"],
-  "atores_mais_visiveis": ["nome próprio da instituição/ator 1", "nome próprio 2", "nome próprio 3"],
-  "abrangencia_predominante": "item da taxonomia",
-  "tendencia_do_periodo": "uma frase curta sobre a cobertura do dia"
-}}
-
-Taxonomia obrigatória para enquadramentos:
-{chr(10).join("- " + item for item in ENQUADRAMENTOS)}
-
-Taxonomia obrigatória para áreas:
-{chr(10).join("- " + item for item in AREAS)}
-
-Taxonomia obrigatória para abrangência:
-{chr(10).join("- " + item for item in ABRANGENCIA)}
-
-Regra específica para "atores_mais_visiveis":
-- Liste APENAS nomes próprios específicos de instituições, empresas, agências ou
-  pessoas (ex: "USP", "Fiocruz", "Instituto Butantan", "Nasa", "Universidade de
-  Oxford", "OMS"). NÃO use categorias genéricas como "universidades brasileiras",
-  "institutos de pesquisa", "governo" ou "agências internacionais" — se as matérias
-  só mencionarem a categoria genérica sem nomear a instituição, não inclua esse
-  item na lista.
-
-Regra específica para "abrangencia_predominante":
-- Refere-se à escala geográfica do FATO coberto (onde a descoberta, pesquisa,
-  missão ou instituição central de cada matéria está situada/ocorre) — NÃO ao
-  alcance do veículo de imprensa, que é sempre nacional por se tratar da Folha.
-- Exemplo: uma matéria sobre uma missão da Nasa ou uma pesquisa em universidade
-  estrangeira é "Internacional", mesmo publicada por veículo brasileiro. Uma
-  matéria sobre uma política do Ministério da Saúde do Brasil é "Nacional".
-- Se as matérias do dia indicarem abrangências muito diferentes entre si sem uma
-  predominância clara, use "Não conclusivo" em vez de forçar uma escolha.
-
-Regras gerais:
-- Use apenas os dados das matérias abaixo.
-- Não invente informações.
-- Se algo não estiver claro, use "Não conclusivo".
-- O JSON deve ser válido.
-- Não use markdown.
+Use apenas os dados abaixo. Não invente informações.
 
 Matérias do dia:
-
 {texto_materias}
+
+Responda apenas com um objeto JSON válido, sem markdown, exatamente nesta
+estrutura:
+
+{{
+  "tendencia_do_periodo": "frase curta sobre a cobertura do dia"
+}}
 """
 
     resposta = client.chat.completions.create(
@@ -161,17 +84,15 @@ Matérias do dia:
         messages=[
             {
                 "role": "system",
-                "content": "Você gera JSONs válidos para análise de cobertura jornalística."
+                "content": "Você resume tendências de cobertura jornalística de ciência em uma frase curta."
             },
-            {
-                "role": "user",
-                "content": prompt
-            }
+            {"role": "user", "content": prompt}
         ],
-        temperature=0.1
+        temperature=0.2
     )
 
-    return extrair_json(resposta.choices[0].message.content)
+    dados = extrair_json(resposta.choices[0].message.content)
+    return dados.get("tendencia_do_periodo", "")
 
 
 def carregar_jsonl(caminho):
@@ -199,10 +120,7 @@ def salvar_jsonl(caminho, registros):
 
 
 def carregar_corpus():
-    """Carrega e combina todas as fontes de matérias disponíveis (Folha,
-    CNN Brasil, e outras que forem adicionadas depois). A análise diária
-    passa a cobrir o dia inteiro em TODOS os veículos combinados — analisar
-    cada veículo separadamente multiplicaria o custo de API por dia."""
+    """Carrega e combina todas as fontes de matérias disponíveis."""
     dataframes = []
 
     for caminho in ARQUIVOS_FONTES:
@@ -230,93 +148,106 @@ def main():
 
     df = carregar_corpus()
 
-    df["date_dt"] = pd.to_datetime(
-        df["date"],
-        format="%d/%m/%Y",
-        errors="coerce"
-    )
+    df["date_dt"] = pd.to_datetime(df["date"], format="%d/%m/%Y", errors="coerce")
     df = df.dropna(subset=["date_dt"])
 
     if df.empty:
-        raise ValueError("Nenhuma linha com data válida encontrada em folha.csv.")
+        raise ValueError("Nenhuma linha com data válida encontrada nas fontes de dados.")
 
-    todas_as_datas = sorted(df["date_dt"].dt.normalize().unique())
+    if "veiculo" not in df.columns:
+        df["veiculo"] = "Desconhecido"
+    df["veiculo"] = df["veiculo"].fillna("Desconhecido")
+
+    df["data_normalizada"] = df["date_dt"].dt.normalize()
+
+    combinacoes_no_corpus = sorted(
+        df.groupby(["data_normalizada", "veiculo"]).groups.keys(),
+        key=lambda par: (par[0], par[1])
+    )
+
     total_processado = 0
     rodada = 0
 
-    # Loop externo: continua rodando lotes de até MAX_DIAS_POR_EXECUCAO dias
-    # até esgotar a fila de pendências, tudo numa única execução do script
-    # (não precisa mais rodar de novo manualmente para continuar o backfill).
     while True:
         registros = carregar_jsonl(ARQUIVO_SAIDA)
-        datas_ja_analisadas = {r.get("data") for r in registros}
+        combinacoes_ja_analisadas = {
+            (r.get("data"), r.get("veiculo")) for r in registros
+        }
 
-        dias_pendentes = [
-            data_dt for data_dt in todas_as_datas
-            if pd.Timestamp(data_dt).strftime("%d/%m/%Y") not in datas_ja_analisadas
+        combinacoes_pendentes = [
+            (data_dt, veiculo) for data_dt, veiculo in combinacoes_no_corpus
+            if (pd.Timestamp(data_dt).strftime("%d/%m/%Y"), veiculo) not in combinacoes_ja_analisadas
         ]
 
-        if not dias_pendentes:
+        if not combinacoes_pendentes:
             break
 
         rodada += 1
-        dias_a_processar = dias_pendentes[:MAX_DIAS_POR_EXECUCAO]
+        lote = combinacoes_pendentes[:MAX_COMBINACOES_POR_EXECUCAO]
 
         print(
-            f"\n--- Lote {rodada}: {len(dias_a_processar)} de "
-            f"{len(dias_pendentes)} dia(s) pendente(s) ---"
+            f"\n--- Lote {rodada}: {len(lote)} de "
+            f"{len(combinacoes_pendentes)} combinação(ões) dia×veículo pendente(s) ---"
         )
 
-        for i, data_dt in enumerate(dias_a_processar):
+        for i, (data_dt, veiculo) in enumerate(lote):
             data_str = pd.Timestamp(data_dt).strftime("%d/%m/%Y")
-            df_dia = df[df["date_dt"].dt.normalize() == data_dt]
+            df_combinacao = df[
+                (df["data_normalizada"] == data_dt) & (df["veiculo"] == veiculo)
+            ]
 
             print(
-                f"[{total_processado + 1}] Analisando {data_str} "
-                f"({len(df_dia)} matéria(s))..."
+                f"[{total_processado + 1}] Gerando tendência de {data_str} — {veiculo} "
+                f"({len(df_combinacao)} matéria(s))..."
             )
 
             try:
-                analise = analisar_dia(df_dia, data_str)
+                tendencia = gerar_tendencia(df_combinacao, data_str, veiculo)
             except Exception as e:
-                print(f"  Erro ao analisar {data_str}, pulando este dia: {e}")
+                print(f"  Erro ao processar {data_str} ({veiculo}), pulando esta combinação: {e}")
                 continue
 
-            # Campos de controle, não dependem do modelo
-            analise["data"] = data_str
-            analise["n_materias"] = int(len(df_dia))
+            registro = {
+                "data": data_str,
+                "veiculo": veiculo,
+                "n_materias": int(len(df_combinacao)),
+                "tendencia_do_periodo": tendencia,
+            }
 
-            # Idempotência: remove qualquer entrada antiga do mesmo dia antes
-            # de adicionar a nova (protege contra reprocessamento duplicado).
-            registros = [r for r in registros if r.get("data") != data_str]
-            registros.append(analise)
+            registros = [
+                r for r in registros
+                if not (r.get("data") == data_str and r.get("veiculo") == veiculo)
+            ]
+            registros.append(registro)
 
-            # Mantém o histórico ordenado por data para facilitar leitura/depuração
             registros_ordenados = sorted(
                 registros,
-                key=lambda r: pd.to_datetime(r.get("data"), format="%d/%m/%Y", errors="coerce")
+                key=lambda r: (
+                    pd.to_datetime(r.get("data"), format="%d/%m/%Y", errors="coerce"),
+                    r.get("veiculo") or ""
+                )
             )
 
-            # Salva a cada dia processado (checkpoint) — se o script for
-            # interrompido no meio, o progresso já feito não se perde.
             salvar_jsonl(ARQUIVO_SAIDA, registros_ordenados)
             registros = registros_ordenados
 
             total_processado += 1
 
-            if i < len(dias_a_processar) - 1:
+            if i < len(lote) - 1:
                 time.sleep(INTERVALO_ENTRE_CHAMADAS)
 
+    total_combinacoes = len(combinacoes_no_corpus)
     if total_processado == 0:
         print(
-            f"Nenhum dia pendente. Todos os {len(todas_as_datas)} dia(s) do "
-            f"dataset já possuem análise em {ARQUIVO_SAIDA}."
+            f"Nenhuma combinação dia×veículo pendente. Todas as "
+            f"{total_combinacoes} combinação(ões) do dataset já possuem "
+            f"tendência gerada em {ARQUIVO_SAIDA}."
         )
     else:
         print(
-            f"\nConcluído: {total_processado} dia(s) processado(s) nesta "
-            f"execução. Todos os {len(todas_as_datas)} dia(s) do dataset "
-            f"agora têm análise em {ARQUIVO_SAIDA}."
+            f"\nConcluído: {total_processado} combinação(ões) processada(s) "
+            f"nesta execução. Todas as {total_combinacoes} combinação(ões) "
+            f"do dataset agora têm tendência em {ARQUIVO_SAIDA}."
         )
 
 

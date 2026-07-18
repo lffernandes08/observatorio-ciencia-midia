@@ -215,19 +215,6 @@ def carregar_analise_diaria():
     return registros
 
 
-def obter_analise_do_dia(registros, data_alvo):
-    """Retorna o registro cujo campo 'data' bate com data_alvo (DD/MM/AAAA),
-    ou None se a análise daquele dia ainda não foi gerada."""
-    if not registros or not data_alvo:
-        return None
-
-    for registro in reversed(registros):
-        if registro.get("data") == data_alvo:
-            return registro
-
-    return None
-
-
 def analise_get(analise, chave, padrao=None):
     """Acesso seguro a chaves da análise diária, evitando KeyError
     se o formato do registro mudar ou vier incompleto."""
@@ -237,52 +224,109 @@ def analise_get(analise, chave, padrao=None):
     return valor if valor is not None else padrao
 
 
-def agregar_analises_periodo(analises, datas_no_filtro, top_n=8):
-    """Agrega, em Python (sem nenhuma chamada de IA), as análises diárias
-    cuja data está no conjunto de datas do filtro atual. Listas categóricas
-    viram rankings de frequência; abrangência vira a moda entre os dias."""
-    analises_periodo = [a for a in analises if a.get("data") in datas_no_filtro]
+def agregar_analises_periodo(analises, datas_no_filtro, veiculos_no_filtro=None):
+    """Agrega, em Python, as entradas de analise_diaria.jsonl — agora só
+    contendo 'tendencia_do_periodo' por combinação (dia, veículo), já que
+    enquadramento/área/abrangência/instituições/pessoas migraram para
+    extrair_keywords.py (matéria por matéria). veiculos_no_filtro=None
+    combina todos os veículos disponíveis."""
+    analises_periodo = [
+        a for a in analises
+        if a.get("data") in datas_no_filtro
+        and (veiculos_no_filtro is None or a.get("veiculo") in veiculos_no_filtro)
+    ]
 
     if not analises_periodo:
         return None
 
-    contadores = {
-        "temas_em_destaque": Counter(),
-        "enquadramentos_predominantes": Counter(),
-        "areas_predominantes": Counter(),
-        "atores_mais_visiveis": Counter(),
-    }
-    contagem_abrangencia = Counter()
     tendencias_diarias = []
     total_materias = 0
+    datas_distintas = set()
 
     for a in analises_periodo:
-        for chave, contador in contadores.items():
-            for item in analise_get(a, chave):
-                if item:
-                    contador[item] += 1
-
-        abrangencia = a.get("abrangencia_predominante")
-        if abrangencia:
-            contagem_abrangencia[abrangencia] += 1
-
         tendencia = a.get("tendencia_do_periodo")
         if tendencia:
-            tendencias_diarias.append((a.get("data"), tendencia))
+            tendencias_diarias.append((a.get("data"), a.get("veiculo", "Desconhecido"), tendencia))
 
         total_materias += analise_get(a, "n_materias", 0)
+        datas_distintas.add(a.get("data"))
 
     return {
-        "temas_em_destaque": [item for item, _ in contadores["temas_em_destaque"].most_common(top_n)],
-        "enquadramentos_predominantes": [item for item, _ in contadores["enquadramentos_predominantes"].most_common(top_n)],
-        "areas_predominantes": [item for item, _ in contadores["areas_predominantes"].most_common(top_n)],
-        "atores_mais_visiveis": [item for item, _ in contadores["atores_mais_visiveis"].most_common(top_n)],
-        "abrangencia_predominante": (
-            contagem_abrangencia.most_common(1)[0][0] if contagem_abrangencia else "Não conclusivo"
-        ),
-        "n_dias": len(analises_periodo),
+        "n_dias": len(datas_distintas),
+        "n_combinacoes": len(analises_periodo),
         "n_materias": total_materias,
-        "tendencias_diarias": sorted(tendencias_diarias, key=lambda t: t[0]),
+        "tendencias_diarias": sorted(
+            tendencias_diarias,
+            key=lambda t: (pd.to_datetime(t[0], format="%d/%m/%Y", errors="coerce"), t[1])
+        ),
+    }
+
+
+# Rótulos legíveis para os códigos de taxonomia salvos por
+# extrair_keywords.py (frame_predominante e abrangencia vêm em
+# MAIUSCULO_COM_UNDERSCORE, mais fácil de validar no prompt/código).
+ROTULOS_FRAME = {
+    "DESCOBERTA_CIENTIFICA": "Descoberta científica",
+    "INOVACAO_TECNOLOGICA": "Inovação tecnológica",
+    "PROMESSA_E_BENEFICIOS": "Promessa e benefícios",
+    "RISCO_E_AMEACA": "Risco e ameaça",
+    "INCERTEZA_CIENTIFICA": "Incerteza científica",
+    "CONFLITO_E_CONTROVERSIA": "Conflito e controvérsia",
+    "IMPACTO_SOCIAL": "Impacto social",
+    "POLITICA_CIENTIFICA_E_GOVERNANCA": "Política científica e governança",
+    "ETICA_E_MORALIDADE": "Ética e moralidade",
+    "EDUCACAO_E_EXPLICACAO_CIENTIFICA": "Educação e explicação científica",
+    "ECONOMIA_E_MERCADO": "Economia e mercado",
+    "PERSONALIZACAO_E_HUMANIZACAO": "Personalização e humanização",
+    "RESPONSABILIDADE_E_ATRIBUICAO": "Responsabilidade e atribuição",
+    "COMPETICAO_E_PRESTIGIO": "Competição e prestígio",
+    "SEM_FRAME_CIENTIFICO_IDENTIFICAVEL": "Sem frame científico identificável",
+    "ERRO": "Erro na classificação",
+}
+
+ROTULOS_ABRANGENCIA = {
+    "NACIONAL": "Nacional",
+    "INTERNACIONAL": "Internacional",
+    "NAO_CONCLUSIVO": "Não conclusivo",
+    "ERRO": "Erro na classificação",
+}
+
+
+def agregar_classificacoes_materias(df_com_keywords, top_n=8):
+    """Agrega, em Python (sem chamada de IA), o enquadramento, área,
+    abrangência, instituições e pessoas das matérias já classificadas por
+    extrair_keywords.py. df_com_keywords precisa ser o resultado de um
+    merge entre o corpus principal (já filtrado por período/veículo) e
+    materias_keywords.csv (via URL) — funciona com qualquer filtro,
+    porque a classificação já existe por matéria; agregar é gratuito."""
+    if df_com_keywords.empty:
+        return None
+
+    contagem_frame = Counter(f for f in df_com_keywords["frame_predominante"] if f)
+    contagem_abrangencia = Counter(a for a in df_com_keywords["abrangencia"] if a)
+    contagem_area = Counter(a for a in df_com_keywords["area"] if a)
+    contagem_instituicoes = Counter(
+        nome for lista in df_com_keywords["instituicoes_lista"] for nome in lista if nome
+    )
+    contagem_pessoas = Counter(
+        nome for lista in df_com_keywords["pessoas_lista"] for nome in lista if nome
+    )
+
+    if contagem_abrangencia:
+        codigo_abrangencia = contagem_abrangencia.most_common(1)[0][0]
+        abrangencia_predominante = ROTULOS_ABRANGENCIA.get(codigo_abrangencia, codigo_abrangencia)
+    else:
+        abrangencia_predominante = "Não conclusivo"
+
+    return {
+        "enquadramentos_predominantes": [
+            ROTULOS_FRAME.get(f, f) for f, _ in contagem_frame.most_common(top_n)
+        ],
+        "areas_predominantes": [a for a, _ in contagem_area.most_common(top_n)],
+        "abrangencia_predominante": abrangencia_predominante,
+        "instituicoes_mais_visiveis": [i for i, _ in contagem_instituicoes.most_common(top_n)],
+        "pessoas_mais_visiveis": [p for p, _ in contagem_pessoas.most_common(top_n)],
+        "n_materias": len(df_com_keywords),
     }
 
 
@@ -300,19 +344,24 @@ def sintetizar_tendencia_periodo(tendencias_diarias):
 
     client = OpenAI(api_key=api_key)
 
-    linhas = "\n".join(f"- {data}: {texto}" for data, texto in tendencias_diarias)
+    linhas = "\n".join(
+        f"- {data} ({veiculo}): {texto}" for data, veiculo, texto in tendencias_diarias
+    )
 
     prompt = f"""
 Você é pesquisador em jornalismo científico. Abaixo estão frases curtas que
-resumem a tendência da cobertura de ciência da Folha em cada dia de um período.
+resumem a tendência da cobertura de ciência de veículos brasileiros, uma por
+combinação de dia e veículo, dentro de um período.
 
 Sintetize essas frases em um único parágrafo coeso (3 a 5 frases), em português
 do Brasil, descrevendo a tendência geral do período como um todo — não repita
-as frases dia a dia, produza uma leitura consolidada.
+as frases dia a dia, produza uma leitura consolidada. Se houver diferenças
+notáveis de enfoque entre veículos, pode mencioná-las brevemente, mas o foco
+principal é a tendência do período como um todo.
 
 Não invente informações além do que está nas frases abaixo. Não use markdown.
 
-Frases diárias do período:
+Frases por dia e veículo do período:
 {linhas}
 """
 
@@ -333,8 +382,11 @@ Frases diárias do período:
 
 @st.cache_data
 def carregar_keywords():
-    """Carrega as palavras-chave extraídas por IA (extrair_keywords.py).
-    Retorna None se o arquivo ainda não foi gerado, para não quebrar o app."""
+    """Carrega a classificação por matéria gerada por extrair_keywords.py:
+    palavras-chave, enquadramento, área, abrangência, instituições e
+    pessoas. Retorna None se o arquivo ainda não existe ou está num
+    formato antigo/incompleto (força reprocessamento com
+    extrair_keywords.py), para não quebrar o app."""
     try:
         df_kw = pd.read_csv("materias_keywords.csv", encoding="utf-8-sig")
     except FileNotFoundError:
@@ -343,10 +395,16 @@ def carregar_keywords():
         st.sidebar.warning(f"Erro ao ler materias_keywords.csv: {e}")
         return None
 
-    if "url" not in df_kw.columns or "palavras_chave" not in df_kw.columns:
+    colunas_esperadas = [
+        "url", "palavras_chave", "frame_predominante", "area",
+        "abrangencia", "instituicoes", "pessoas"
+    ]
+    colunas_faltando = [c for c in colunas_esperadas if c not in df_kw.columns]
+    if colunas_faltando:
         st.sidebar.warning(
-            "materias_keywords.csv está com colunas inesperadas "
-            "(esperado: url, palavras_chave)."
+            "materias_keywords.csv está num formato antigo ou incompleto "
+            f"(faltando: {', '.join(colunas_faltando)}). Rode "
+            "extrair_keywords.py para atualizar."
         )
         return None
 
@@ -358,7 +416,12 @@ def carregar_keywords():
             return []
 
     df_kw["palavras_chave_lista"] = df_kw["palavras_chave"].apply(_parse_lista)
+    df_kw["instituicoes_lista"] = df_kw["instituicoes"].apply(_parse_lista)
+    df_kw["pessoas_lista"] = df_kw["pessoas"].apply(_parse_lista)
     df_kw["url"] = df_kw["url"].fillna("")
+    df_kw["frame_predominante"] = df_kw["frame_predominante"].fillna("")
+    df_kw["area"] = df_kw["area"].fillna("")
+    df_kw["abrangencia"] = df_kw["abrangencia"].fillna("")
 
     return df_kw
 
@@ -743,8 +806,36 @@ data_mais_recente_str = (
 )
 
 analises_diarias = carregar_analise_diaria()
-analise = obter_analise_do_dia(analises_diarias, data_mais_recente_str)
 df_keywords = carregar_keywords()
+
+# Matérias de hoje já respeitando o filtro de veículo da sidebar — usada
+# tanto para a agregação de enquadramento/área/abrangência/instituições/
+# pessoas quanto para o sorteio de matérias mais abaixo nesta seção.
+df_hoje_filtrado = (
+    df_original[
+        (df_original["date_dt"] == data_mais_recente_dt)
+        & (df_original["Veículo"].isin(veiculos_selecionados))
+    ]
+    if pd.notna(data_mais_recente_dt) else df_original.iloc[0:0]
+)
+
+if df_keywords is not None and not df_hoje_filtrado.empty:
+    df_hoje_com_keywords = df_hoje_filtrado.merge(
+        df_keywords[[
+            "url", "frame_predominante", "area", "abrangencia",
+            "instituicoes_lista", "pessoas_lista"
+        ]],
+        left_on="URL", right_on="url", how="inner"
+    )
+    resultado_panorama = agregar_classificacoes_materias(df_hoje_com_keywords)
+else:
+    resultado_panorama = None
+
+resultado_tendencia_hoje = agregar_analises_periodo(
+    analises_diarias,
+    {data_mais_recente_str} if data_mais_recente_str else set(),
+    veiculos_no_filtro=veiculos_selecionados
+)
 
 
 # =========================
@@ -916,9 +1007,10 @@ if secao_selecionada == "Panorama do dia":
     st.markdown('<div class="painel-eyebrow">Panorama do dia</div>', unsafe_allow_html=True)
     st.subheader(f"📌 Panorama da cobertura — {data_mais_recente_str}")
     st.caption(
-        f"{numero_br(n_materias_hoje)} matéria(s) publicadas em {data_mais_recente_str}. "
-        "Este painel sempre mostra o dia mais recente do dataset, independente do "
-        "período selecionado na barra lateral — as demais seções do app respeitam o filtro."
+        f"{numero_br(n_materias_hoje)} matéria(s) publicadas em {data_mais_recente_str} "
+        "(todos os veículos). Este painel sempre mostra o dia mais recente do dataset, "
+        "independente do período selecionado na barra lateral — mas os cards de "
+        "classificação abaixo respeitam o filtro de veículo, se aplicado."
     )
 
     renderizar_gauge_ritmo(
@@ -927,57 +1019,85 @@ if secao_selecionada == "Panorama do dia":
         n_materias_hoje, ritmo_historico, razao_dia
     )
 
-    if analise:
+    if resultado_panorama:
         col_a, col_b, col_c = st.columns(3)
 
         with col_a:
             card(
-                "Temas em destaque",
-                analise_get(analise, "temas_em_destaque"),
-                "🧪"
-            )
-
-            card(
                 "Enquadramentos",
-                analise_get(analise, "enquadramentos_predominantes"),
+                resultado_panorama["enquadramentos_predominantes"],
                 "📰"
+            )
+            card(
+                "Instituições mais visíveis",
+                resultado_panorama["instituicoes_mais_visiveis"],
+                "🏛️"
             )
 
         with col_b:
             card(
                 "Áreas predominantes",
-                analise_get(analise, "areas_predominantes"),
+                resultado_panorama["areas_predominantes"],
                 "🔬"
             )
             card(
-                "Atores mais visíveis",
-                analise_get(analise, "atores_mais_visiveis"),
-                "👥"
+                "Pessoas mais visíveis",
+                resultado_panorama["pessoas_mais_visiveis"],
+                "👤"
             )
 
         with col_c:
             card(
                 "Abrangência",
-                [analise_get(analise, "abrangencia_predominante", "—")],
+                [resultado_panorama["abrangencia_predominante"]],
                 "🌎"
             )
-
-        st.markdown(
-            f"""
-            <div class="insight-box">
-                <div class="insight-title">📈 Tendência do dia</div>
-                {html.escape(analise_get(analise, "tendencia_do_periodo", ""))}
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-
     else:
         aviso_data = data_mais_recente_str or "o dia mais recente do dataset"
-        st.info(
-            f"Análise de IA ainda não gerada para {aviso_data} "
-            "(rode: python analise_diaria.py). O ritmo de publicação acima já está "
-            "disponível, pois não depende dessa etapa."
+        if len(veiculos_selecionados) < len(veiculos_disponiveis):
+            st.info(
+                f"Nenhum veículo selecionado na barra lateral publicou matéria em "
+                f"{aviso_data}, ou a classificação por IA dessas matérias ainda não "
+                "foi gerada (rode: python extrair_keywords.py)."
+            )
+        else:
+            st.info(
+                f"Classificação de IA ainda não gerada para as matérias de "
+                f"{aviso_data} (rode: python extrair_keywords.py)."
+            )
+
+    if resultado_tendencia_hoje:
+        tendencias_hoje = resultado_tendencia_hoje["tendencias_diarias"]
+
+        if len(tendencias_hoje) == 1:
+            _, _, texto_tendencia = tendencias_hoje[0]
+            st.markdown(
+                f"""
+                <div class="insight-box">
+                    <div class="insight-title">📈 Tendência do dia</div>
+                    {html.escape(texto_tendencia)}
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+        elif len(tendencias_hoje) > 1:
+            linhas_tendencia_html = "".join(
+                f'<p style="margin:0 0 10px 0;"><b>{html.escape(veiculo)}:</b> {html.escape(texto)}</p>'
+                for _, veiculo, texto in tendencias_hoje
+            )
+            st.markdown(
+                f"""
+                <div class="insight-box">
+                    <div class="insight-title">📈 Tendência do dia (por veículo)</div>
+                    {linhas_tendencia_html}
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+    else:
+        st.caption(
+            "📈 Tendência do dia ainda não gerada para este dia/veículo "
+            "(rode: python analise_diaria.py)."
         )
 
     st.divider()
@@ -988,7 +1108,7 @@ if secao_selecionada == "Panorama do dia":
     with col_botao_sorteio:
         sortear_novamente = st.button("🔀 Sortear outras", key="btn_sortear_materias")
 
-    df_dia_completo = df_original[df_original["date_dt"] == data_mais_recente_dt] if pd.notna(data_mais_recente_dt) else df_original.iloc[0:0]
+    df_dia_completo = df_hoje_filtrado
 
     precisa_sortear = (
         sortear_novamente
@@ -2165,66 +2285,95 @@ if secao_selecionada == "Análise IA":
     mostrar_periodo_no_topo(periodo_label_sidebar, escala)
     st.subheader("Análise estruturada por IA")
     st.caption(
-        "Agrega, sem nenhuma chamada de IA nova, as análises diárias já geradas "
-        "(analise_diaria.jsonl) para os dias que caem no filtro atual da barra "
-        "lateral. Cada dia é analisado pela IA só uma vez, então filtrar datas "
-        "aqui não tem custo adicional."
+        "Enquadramento, área, abrangência, instituições e pessoas são agregados "
+        "(sem nenhuma chamada de IA nova) a partir da classificação por matéria já "
+        "gerada em extrair_keywords.py — filtrar aqui não tem custo adicional. Só a "
+        "tendência do período usa análises diárias pré-geradas (analise_diaria.jsonl) "
+        "e a síntese abaixo é sob demanda (1 chamada de IA)."
+    )
+
+    if df_keywords is None:
+        st.warning(
+            "O arquivo materias_keywords.csv ainda não foi encontrado. Rode "
+            "extrair_keywords.py para habilitar esta seção."
+        )
+    else:
+        urls_filtradas_ia = set(df["URL"]) - {""}
+        df_periodo_com_keywords = df[df["URL"].isin(urls_filtradas_ia)].merge(
+            df_keywords[[
+                "url", "frame_predominante", "area", "abrangencia",
+                "instituicoes_lista", "pessoas_lista"
+            ]],
+            left_on="URL", right_on="url", how="inner"
+        )
+        resultado_classificacao = agregar_classificacoes_materias(df_periodo_com_keywords)
+
+        if not resultado_classificacao:
+            st.warning(
+                "Nenhuma matéria do período/busca/veículo filtrados possui "
+                "classificação de IA ainda. Rode extrair_keywords.py para preencher."
+            )
+        else:
+            rotulo_veiculo = (
+                "todos os veículos" if len(veiculos_selecionados) == len(veiculos_disponiveis)
+                else f"{len(veiculos_selecionados)} veículo(s) selecionado(s)"
+            )
+            st.caption(
+                f"📊 {numero_br(resultado_classificacao['n_materias'])} matéria(s) "
+                f"classificada(s) no período ({rotulo_veiculo})."
+            )
+
+            col1, col2 = st.columns(2)
+
+            with col1:
+                st.markdown("### Enquadramentos predominantes")
+                for item in resultado_classificacao["enquadramentos_predominantes"]:
+                    st.write(f"• {item}")
+
+                st.markdown("### Áreas predominantes")
+                for item in resultado_classificacao["areas_predominantes"]:
+                    st.write(f"• {item}")
+
+                st.markdown("### Instituições mais visíveis")
+                for item in resultado_classificacao["instituicoes_mais_visiveis"]:
+                    st.write(f"• {item}")
+
+            with col2:
+                st.markdown("### Pessoas mais visíveis")
+                for item in resultado_classificacao["pessoas_mais_visiveis"]:
+                    st.write(f"• {item}")
+
+                st.markdown("### Abrangência predominante")
+                st.write(f"• {resultado_classificacao['abrangencia_predominante']}")
+
+    st.divider()
+
+    st.markdown("### Tendência do período")
+    st.caption(
+        "Este campo não dá para agregar por contagem — é texto corrido, gerado "
+        "por dia×veículo em analise_diaria.py. Gere uma síntese sob demanda "
+        "(1 chamada de IA, usando só as frases diárias já existentes, não as "
+        "matérias originais)."
     )
 
     datas_no_filtro = set(df["Data"].unique())
-    resultado_periodo = agregar_analises_periodo(analises_diarias, datas_no_filtro)
+    resultado_tendencia_periodo = agregar_analises_periodo(
+        analises_diarias, datas_no_filtro, veiculos_no_filtro=veiculos_selecionados
+    )
 
-    if not resultado_periodo:
-        st.warning(
-            "Nenhum dia do período/busca filtrados possui análise diária de IA "
-            "ainda. Rode analise_diaria.py nos dias faltantes para preencher "
-            "o histórico."
+    if not resultado_tendencia_periodo:
+        st.info(
+            "Nenhuma tendência gerada ainda para os dias/veículos deste período "
+            "(rode: python analise_diaria.py)."
         )
     else:
-        st.caption(
-            f"📊 {resultado_periodo['n_dias']} dia(s) com análise disponível no "
-            f"período, totalizando {numero_br(resultado_periodo['n_materias'])} matéria(s)."
-        )
-
-        col1, col2 = st.columns(2)
-
-        with col1:
-            st.markdown("### Temas em destaque")
-            for item in resultado_periodo["temas_em_destaque"]:
-                st.write(f"• {item}")
-
-            st.markdown("### Enquadramentos predominantes")
-            for item in resultado_periodo["enquadramentos_predominantes"]:
-                st.write(f"• {item}")
-
-            st.markdown("### Áreas predominantes")
-            for item in resultado_periodo["areas_predominantes"]:
-                st.write(f"• {item}")
-
-        with col2:
-            st.markdown("### Atores mais visíveis")
-            for item in resultado_periodo["atores_mais_visiveis"]:
-                st.write(f"• {item}")
-
-            st.markdown("### Abrangência predominante")
-            st.write(f"• {resultado_periodo['abrangencia_predominante']}")
-
-        st.divider()
-
-        st.markdown("### Tendência do período")
-        st.caption(
-            "Este campo não dá para agregar por contagem — é texto corrido. "
-            "Gere uma síntese sob demanda (1 chamada de IA, usando só as frases "
-            "diárias já existentes, não as matérias originais)."
-        )
-
-        chave_periodo = tuple(resultado_periodo["tendencias_diarias"])
+        chave_periodo = tuple(resultado_tendencia_periodo["tendencias_diarias"])
 
         if st.button("🧬 Gerar síntese do período", key="btn_sintese_periodo"):
             with st.spinner("Sintetizando tendência do período..."):
                 try:
                     texto_sintese = sintetizar_tendencia_periodo(
-                        resultado_periodo["tendencias_diarias"]
+                        resultado_tendencia_periodo["tendencias_diarias"]
                     )
                     st.session_state["sintese_periodo_texto"] = texto_sintese
                     st.session_state["sintese_periodo_chave"] = chave_periodo
@@ -2240,8 +2389,8 @@ if secao_selecionada == "Análise IA":
             st.info(st.session_state["sintese_periodo_texto"])
         else:
             with st.expander("Ver frases diárias sem sintetizar"):
-                for data_item, texto_item in resultado_periodo["tendencias_diarias"]:
-                    st.write(f"**{data_item}** — {texto_item}")
+                for data_item, veiculo_item, texto_item in resultado_tendencia_periodo["tendencias_diarias"]:
+                    st.write(f"**{data_item}** ({veiculo_item}) — {texto_item}")
 
 
 @st.cache_data
