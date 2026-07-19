@@ -35,19 +35,29 @@ COLUNAS_SAIDA = [
 ]
 
 # Mesma taxonomia de área que já existia em analise_diaria.py — não mudou.
+# As 8 grandes áreas oficiais do CNPq — sem categoria coringa de propósito
+# (nem "Interdisciplinar" nem "Outro"): uma opção fácil tende a virar a
+# saída padrão da IA quando está em dúvida, enviesando a distribuição real
+# na direção do coringa. A IA é instruída a sempre escolher a área mais
+# central ao fato coberto, mesmo em casos limítrofes.
 AREAS = [
-    "Ciências da Saúde",
+    "Ciências Agrárias",
     "Ciências Biológicas",
+    "Ciências da Saúde",
     "Ciências Exatas e da Terra",
     "Engenharias",
-    "Ciências Agrárias",
-    "Ciências Ambientais",
     "Ciências Humanas",
     "Ciências Sociais Aplicadas",
     "Linguística, Letras e Artes",
-    "Interdisciplinar",
-    "Outro"
 ]
+
+# Categoria à parte (não uma 9ª opção "fácil" misturada na lista acima) —
+# só para quando genuinamente não dá para identificar nenhuma das 8 áreas.
+# Diferente de "Multidisciplinar"/"Interdisciplinar": não deve ser usada só
+# porque a matéria toca mais de uma área (nesse caso, ainda é pra escolher
+# a mais central), reduzindo o risco de virar uma saída de conveniência.
+AREA_NAO_IDENTIFICADA = "Não identificável"
+AREAS_VALIDAS = AREAS + [AREA_NAO_IDENTIFICADA]
 
 FRAMES = [
     "DESCOBERTA_CIENTIFICA", "INOVACAO_TECNOLOGICA", "PROMESSA_E_BENEFICIOS",
@@ -166,10 +176,18 @@ o frame). Não invente informações fora do texto.
 
 ## 3. Área do conhecimento
 
-Escolha exatamente 1 item desta taxonomia (use "Interdisciplinar" se a
-matéria tocar mais de uma área de forma relevante; use "Outro" se nenhuma
-área científica se aplicar):
+Escolha exatamente 1 item desta taxonomia — as 8 grandes áreas oficiais do
+CNPq. Não existe opção "multidisciplinar": mesmo quando a matéria tocar
+mais de uma área, escolha a que for mais central ao fato principal coberto
+(o que está sendo descoberto/estudado/relatado), não uma área só porque
+foi mencionada de passagem.
 {chr(10).join("- " + item for item in AREAS)}
+
+Use "{AREA_NAO_IDENTIFICADA}" APENAS quando o texto genuinamente não
+permitir identificar nenhuma das 8 áreas acima (ex: texto curto/vago
+demais, ou que não trata de nenhum assunto científico reconhecível). NÃO
+use essa opção só porque a matéria toca mais de uma área — nesse caso,
+ainda escolha a área mais central entre as 8.
 
 ## 4. Abrangência geográfica
 
@@ -259,8 +277,13 @@ def classificar_materia(row):
         abrangencia = abrangencia or "NAO_CONCLUSIVO"
 
     area = str(dados.get("area", "")).strip()
-    if area not in AREAS:
-        area = area or "Outro"
+    # Só cai no fallback se vier vazio (a IA não respondeu nada) — se vier
+    # algo fora da taxonomia mas não vazio, mantém como veio (não mascara
+    # um erro de prompt), mas avisa no terminal pra ficar visível.
+    if not area:
+        area = AREA_NAO_IDENTIFICADA
+    elif area not in AREAS_VALIDAS:
+        print(f"  Aviso: área fora da taxonomia esperada: {area!r}")
 
     return {
         "palavras_chave": dados.get("palavras_chave", []),
