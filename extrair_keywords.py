@@ -17,7 +17,16 @@ Uso:
 """
 
 import os
+import sys
 import json
+
+# O Windows costuma redirecionar stdout/stderr para o console/log com a
+# codificação cp1252 (Windows-1252), que não representa vários caracteres
+# — protege preventivamente contra o mesmo UnicodeEncodeError que já
+# derrubou os scrapers (cnn_brasil.py, bbc_brasil.py, g1_globo.py).
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 import time
 import pandas as pd
 from openai import OpenAI
@@ -51,13 +60,20 @@ AREAS = [
     "Linguística, Letras e Artes",
 ]
 
-# Categoria à parte (não uma 9ª opção "fácil" misturada na lista acima) —
-# só para quando genuinamente não dá para identificar nenhuma das 8 áreas.
-# Diferente de "Multidisciplinar"/"Interdisciplinar": não deve ser usada só
-# porque a matéria toca mais de uma área (nesse caso, ainda é pra escolher
-# a mais central), reduzindo o risco de virar uma saída de conveniência.
+# Duas categorias à parte (não misturadas na lista das 8 "fáceis" acima),
+# cada uma com um significado distinto e uma regra de uso restrita — pra
+# não virarem saída de conveniência quando a IA está em dúvida ou quando a
+# matéria toca mais de uma área (nesse caso, ainda é pra escolher a mais
+# central entre as 8):
+#   - NAO_IDENTIFICADA: o texto é ambíguo/vago demais para saber do que
+#     trata (ex: texto muito curto, cortado, ou genuinamente confuso).
+#   - NAO_APLICAVEL: o texto é claro, mas não é sobre nenhuma área
+#     científica (ex: checagem de fato, perfil biográfico sem foco
+#     científico, nota de orçamento/política que só tangencia ciência,
+#     notícia geral/regional que caiu na coleta por causa da tag/editoria).
 AREA_NAO_IDENTIFICADA = "Não identificável"
-AREAS_VALIDAS = AREAS + [AREA_NAO_IDENTIFICADA]
+AREA_NAO_APLICAVEL = "Não aplicável"
+AREAS_VALIDAS = AREAS + [AREA_NAO_IDENTIFICADA, AREA_NAO_APLICAVEL]
 
 FRAMES = [
     "DESCOBERTA_CIENTIFICA", "INOVACAO_TECNOLOGICA", "PROMESSA_E_BENEFICIOS",
@@ -183,11 +199,17 @@ mais de uma área, escolha a que for mais central ao fato principal coberto
 foi mencionada de passagem.
 {chr(10).join("- " + item for item in AREAS)}
 
-Use "{AREA_NAO_IDENTIFICADA}" APENAS quando o texto genuinamente não
-permitir identificar nenhuma das 8 áreas acima (ex: texto curto/vago
-demais, ou que não trata de nenhum assunto científico reconhecível). NÃO
-use essa opção só porque a matéria toca mais de uma área — nesse caso,
-ainda escolha a área mais central entre as 8.
+Duas exceções, cada uma de uso restrito — não escolha nenhuma delas só
+porque a matéria toca mais de uma área (nesse caso, ainda escolha a área
+mais central entre as 8):
+
+- "{AREA_NAO_IDENTIFICADA}": use apenas quando o texto for ambíguo, curto
+  ou vago demais para saber do que trata.
+- "{AREA_NAO_APLICAVEL}": use apenas quando o texto for claro, mas não
+  tratar de nenhuma área científica (ex: checagem de fato/desmentido sem
+  conteúdo científico central, perfil biográfico sem foco científico,
+  nota de orçamento/política que só tangencia ciência, notícia geral ou
+  regional que não é sobre pesquisa/conhecimento científico).
 
 ## 4. Abrangência geográfica
 

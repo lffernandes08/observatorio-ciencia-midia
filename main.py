@@ -14,6 +14,15 @@ Baseado no notebook original: Selenium - Folha.ipynb
 
 import os
 import sys
+
+# O Windows costuma redirecionar stdout/stderr para o console/log com a
+# codificação cp1252 (Windows-1252) — isso não derruba este script (não
+# usa símbolos fora do alcance do cp1252), mas causa mojibake nos acentos
+# do português no log (ex: "automático" virando "autom�tico"). Força
+# UTF-8 explicitamente pra deixar o log legível.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 import time
 import argparse
 from datetime import datetime, timedelta

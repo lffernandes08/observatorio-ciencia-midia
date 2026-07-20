@@ -10,11 +10,20 @@ Uso:
 """
 
 import os
+import sys
 import json
 import re
 import time
 import pandas as pd
 from openai import OpenAI
+
+# O Windows costuma redirecionar stdout/stderr para o console/log com a
+# codificação cp1252 (Windows-1252), que não representa vários caracteres
+# — protege preventivamente contra o mesmo UnicodeEncodeError que já
+# derrubou os scrapers (cnn_brasil.py, bbc_brasil.py, g1_globo.py).
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 
 ARQUIVOS_FONTES = ["folha.csv", "cnn_brasil.csv", "bbc_brasil.csv", "g1_globo.csv"]

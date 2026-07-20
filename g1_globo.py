@@ -49,6 +49,17 @@ Modos de uso:
 import os
 import re
 import sys
+
+# O Windows costuma redirecionar stdout/stderr para o console/log com a
+# codificação cp1252 (Windows-1252), que não tem representação para vários
+# símbolos usados nos prints deste script (✓, ✗) — isso derruba o script
+# inteiro com UnicodeEncodeError bem no meio de uma extração, mesmo com a
+# matéria já processada com sucesso. Força UTF-8 explicitamente; se algum
+# caractere realmente não puder ser mostrado, troca por um substituto em
+# vez de travar o processo inteiro.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 import time
 import argparse
 from datetime import datetime, timedelta
