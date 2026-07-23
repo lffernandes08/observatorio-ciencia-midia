@@ -69,7 +69,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
-from newsplease import NewsPlease
+from bs4 import BeautifulSoup
 import pandas as pd
 
 
@@ -407,7 +407,7 @@ def coletar_e_salvar_paginas(data_limite_dt, max_paginas, pagina_inicial, urls_e
                   f"(mais antiga nesta página: {data_mais_antiga_da_pagina.strftime('%d/%m/%Y')})")
 
             if cards_no_periodo:
-                df_pagina = extrair_conteudo(cards_no_periodo)
+                df_pagina, driver = extrair_conteudo(driver, cards_no_periodo)
                 total_no_arquivo = salvar_incremental(df_pagina)
                 urls_existentes.update(c["url"] for c in cards_no_periodo)
                 total_processado_nesta_execucao += len(cards_no_periodo)
@@ -432,25 +432,199 @@ def coletar_e_salvar_paginas(data_limite_dt, max_paginas, pagina_inicial, urls_e
     return motivo_parada, pagina_atual, total_processado_nesta_execucao, total_no_arquivo
 
 
-def extrair_conteudo(cards_novos):
+class FalhaConexaoDriver(Exception):
+    """Sinaliza que a sessão do navegador parece ter travado/morrido (não
+    um problema pontual de rede) — quem chama deve reiniciar o driver
+    antes de continuar, em vez de só tentar de novo na mesma sessão."""
+    pass
+
+
+def reiniciar_driver(driver_antigo):
+    """Fecha a sessão do navegador (se ainda responder) e abre uma nova
+    do zero — usado quando o Chrome parece ter travado no meio de uma
+    coleta longa."""
+    try:
+        driver_antigo.quit()
+    except Exception:
+        pass
+
+    print("    Reiniciando sessão do navegador...")
+    options = webdriver.ChromeOptions()
+    return webdriver.Chrome(options=options)
+
+
+def _corpo_da_materia_carregou(driver):
+    """True quando pelo menos um parágrafo do corpo REAL da matéria já
+    renderizou. Usa o mesmo seletor da extração (article[itemprop=
+    articleBody] .content-text__container), não "qualquer <p>" — isso
+    evita capturar a página num estado incompleto, antes do corpo
+    principal terminar de carregar (ex: só a legenda de uma foto)."""
+    try:
+        driver.find_element(
+            By.CSS_SELECTOR,
+            "article[itemprop='articleBody'] p.content-text__container"
+        )
+        return True
+    except Exception:
+        return False
+
+
+def _texto_parece_valido(texto):
+    """Validação pós-extração: descarta resultados curtos demais —
+    sinal de que a página foi capturada num estado incompleto, apesar
+    da espera."""
+    if not texto or len(texto) < 200:
+        return False
+    return True
+
+
+def extrair_dados_materia(driver, url, tentativas=3):
+    """Extrai título, autor(es), corpo do texto e imagem de uma matéria
+    do G1 usando seletores específicos da estrutura real do site — mais
+    confiável que a heurística genérica do news-please, que não pegava
+    o autor corretamente nessa estrutura.
+
+    O G1 expõe o autor via dados estruturados schema.org
+    (span[itemprop='author'] > meta[itemprop='name']), mais confiável
+    que fazer parsing do texto "Por Fulano".
+
+    Tenta várias vezes se o resultado parecer capturado num estado
+    incompleto (ver _texto_parece_valido)."""
+    titulo, autores, texto_completo, imagem_url = "", [], "", ""
+
+    for tentativa in range(1, tentativas + 1):
+        if not carregar_pagina_com_retry(driver, url, tentativas=2, espera_entre_tentativas=5):
+            raise FalhaConexaoDriver(
+                f"Não foi possível carregar {url} — sessão do navegador pode estar travada"
+            )
+
+        try:
+            WebDriverWait(driver, 15).until(_corpo_da_materia_carregou)
+        except Exception:
+            pass  # segue mesmo assim -- a validação abaixo decide se aceita ou tenta de novo
+
+        soup = BeautifulSoup(driver.page_source, "lxml")
+
+        h1 = soup.select_one("h1.content-head__title") or soup.find("h1")
+        titulo = h1.get_text(strip=True) if h1 else ""
+
+        autores = []
+        autor_meta = soup.select_one("span[itemprop='author'] meta[itemprop='name']")
+        if autor_meta and autor_meta.get("content"):
+            autores.append(autor_meta["content"].strip())
+
+        article = soup.select_one("article[itemprop='articleBody']")
+        blocos_texto = []
+        if article:
+            # Parágrafos normais, intertítulos (h2) e citações em destaque —
+            # todos vivem dentro de divs "content-text", que também
+            # aparecem para blocos de tipo "raw" (intertítulo/blockquote),
+            # não só "unstyled" (parágrafo comum).
+            for container in article.select("div.content-text"):
+                p = container.select_one("p.content-text__container")
+                texto_p = p.get_text(strip=True) if p else ""
+                if texto_p:
+                    blocos_texto.append(texto_p)
+                    continue
+                h2 = container.select_one(".content-intertitle h2")
+                if h2:
+                    texto_h2 = h2.get_text(strip=True)
+                    if texto_h2:
+                        blocos_texto.append(texto_h2)
+                    continue
+                blockquote = container.select_one("blockquote.content-blockquote")
+                if blockquote:
+                    texto_bq = blockquote.get_text(strip=True)
+                    if texto_bq:
+                        blocos_texto.append(texto_bq)
+
+        texto_completo = "\n\n".join(blocos_texto)
+
+        if _texto_parece_valido(texto_completo):
+            imagem_url = ""
+            if article:
+                figura = article.select_one("figure.content-media-figure amp-img")
+                if figura and figura.get("src"):
+                    imagem_url = figura["src"]
+            break
+
+        if tentativa < tentativas:
+            print(f"    Extração suspeita (tentativa {tentativa}/{tentativas}), tentando de novo...")
+            time.sleep(2)
+
+    return {
+        "title": titulo,
+        "text": texto_completo,
+        "description": "",
+        "authors": autores,
+        "image_url": imagem_url,
+    }
+
+
+def extrair_conteudo(driver, cards_novos):
     textos = []
 
     for card in cards_novos:
         try:
-            article = NewsPlease.from_url(card["url"])
+            dados = extrair_dados_materia(driver, card["url"])
+
+            if not _texto_parece_valido(dados["text"]):
+                raise ValueError(
+                    "Corpo do texto vazio ou suspeito mesmo após tentativas — "
+                    "possível mudança de estrutura na página"
+                )
 
             textos.append({
                 "url": card["url"],
                 "section": card.get("section", EDITORIA_PADRAO),
-                "title": article.title or card["title"],
-                "text": article.maintext,
-                "description": article.description,
-                "author": article.authors,
-                "image_url": article.image_url,
+                "title": dados["title"] or card["title"],
+                "text": dados["text"],
+                "description": dados["description"],
+                "author": dados["authors"],
+                "image_url": dados["image_url"],
                 "date": card["date_dt"].strftime("%d/%m/%Y"),
                 "veiculo": VEICULO,
             })
-            print(f"  ✓ {article.title or card['title']}")
+            print(f"  ✓ {dados['title'] or card['title']}")
+
+        except FalhaConexaoDriver as e:
+            # A sessão do navegador parece ter travado de vez (não um
+            # timeout pontual) — reinicia do zero e tenta essa mesma
+            # matéria mais uma vez antes de desistir dela.
+            print(f"    {e}")
+            driver = reiniciar_driver(driver)
+
+            try:
+                dados = extrair_dados_materia(driver, card["url"])
+                if not _texto_parece_valido(dados["text"]):
+                    raise ValueError("Texto inválido mesmo após reiniciar o navegador")
+
+                textos.append({
+                    "url": card["url"],
+                    "section": card.get("section", EDITORIA_PADRAO),
+                    "title": dados["title"] or card["title"],
+                    "text": dados["text"],
+                    "description": dados["description"],
+                    "author": dados["authors"],
+                    "image_url": dados["image_url"],
+                    "date": card["date_dt"].strftime("%d/%m/%Y"),
+                    "veiculo": VEICULO,
+                })
+                print(f"  ✓ {dados['title'] or card['title']} (após reiniciar o navegador)")
+
+            except Exception as e2:
+                textos.append({
+                    "url": card["url"],
+                    "section": card.get("section", EDITORIA_PADRAO),
+                    "title": card["title"],
+                    "text": "ERRO!!!",
+                    "description": "ERRO!!!",
+                    "author": "ERRO!!!",
+                    "image_url": "ERRO!!!",
+                    "date": card["date_dt"].strftime("%d/%m/%Y"),
+                    "veiculo": VEICULO,
+                })
+                print(f"  ✗ Erro definitivo mesmo após reiniciar o navegador: {e2}")
 
         except Exception as e:
             textos.append({
@@ -468,7 +642,7 @@ def extrair_conteudo(cards_novos):
 
         time.sleep(INTERVALO_ENTRE_MATERIAS)
 
-    return pd.DataFrame(textos)
+    return pd.DataFrame(textos), driver
 
 
 def salvar_incremental(df_novo):
