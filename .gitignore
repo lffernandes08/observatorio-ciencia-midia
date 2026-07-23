@@ -1,0 +1,12 @@
+# Checkpoints de execução dos scrapers e scripts de correção
+*_progresso.txt
+
+# Logs do pipeline diário
+logs/
+
+# Artefatos gerados automaticamente pelo pyvis (grafo da Rede semântica)
+lib/
+
+# Backups de segurança criados antes de operações arriscadas
+*_backup*.csv
+*_backup*.jsonl
