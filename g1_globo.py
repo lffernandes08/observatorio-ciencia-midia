@@ -512,7 +512,11 @@ def main():
         print("Especifique --auto (coleta diária) ou --historico-dias N (backfill).")
         sys.exit(1)
 
-    hoje_dt = datetime.now()
+    # Normalizado para meia-noite: sem isso, a hora exata em que o script
+    # roda vaza pro cálculo de data_limite_dt, fazendo a comparação >=
+    # excluir incorretamente matérias do próprio dia-limite (que têm hora
+    # 00:00:00), mesmo estando dentro do período pedido.
+    hoje_dt = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
 
     if args.auto:
         limite_seguranca_dt = hoje_dt - timedelta(days=MARGEM_SEGURANCA_DIAS)

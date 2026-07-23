@@ -24,6 +24,15 @@ Particularidades desta fonte (confirmadas a partir do HTML real da página):
   - Não há um rótulo de editoria por matéria nesta página (diferente da
     CNN Brasil) — como é uma página de tópico único, a editoria é fixada
     como "ciência" para todas as matérias coletadas por este script.
+  - Extração do CONTEÚDO da matéria (título, autor, corpo do texto,
+    imagem) usa seletores próprios (ver extrair_dados_materia), não mais
+    news-please — o news-please não executa JavaScript, e ocasionalmente
+    incluía o bloco de metadados (autor/data/tempo de leitura) como se
+    fosse parte do corpo do texto, por não reconhecer a estrutura da BBC.
+    A extração via Selenium reaproveita o navegador já aberto pra
+    listagem e usa a seção section[data-testid='byline'] pro autor, e
+    <p>/<h2> filhos diretos de <div dir="ltr"> dentro de <main> pro corpo
+    do texto — confirmado contra o HTML real de uma matéria.
 
 Modos de uso:
     python bbc_brasil.py --auto
@@ -63,7 +72,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
-from newsplease import NewsPlease
+from bs4 import BeautifulSoup
 import pandas as pd
 
 
@@ -274,7 +283,7 @@ def coletar_e_salvar_paginas(data_limite_dt, max_paginas, pagina_inicial, urls_e
                   f"(mais antiga nesta página: {data_mais_antiga_da_pagina.strftime('%d/%m/%Y')})")
 
             if cards_no_periodo:
-                df_pagina = extrair_conteudo(cards_no_periodo)
+                df_pagina, driver = extrair_conteudo(driver, cards_no_periodo)
                 total_no_arquivo = salvar_incremental(df_pagina)
                 urls_existentes.update(c["url"] for c in cards_no_periodo)
                 total_processado_nesta_execucao += len(cards_no_periodo)
@@ -319,25 +328,194 @@ def limpar_autores(lista_autores):
     return autores_limpos if autores_limpos else lista_autores
 
 
-def extrair_conteudo(cards_novos):
+class FalhaConexaoDriver(Exception):
+    """Sinaliza que a sessão do navegador parece ter travado/morrido (não
+    um problema pontual de rede) — quem chama deve reiniciar o driver
+    antes de continuar, em vez de só tentar de novo na mesma sessão."""
+    pass
+
+
+def reiniciar_driver(driver_antigo):
+    """Fecha a sessão do navegador (se ainda responder) e abre uma nova
+    do zero — usado quando o Chrome parece ter travado no meio de uma
+    coleta longa (centenas de matérias em sequência têm chance real de
+    esgotar recursos ou entrar num estado ruim)."""
+    try:
+        driver_antigo.quit()
+    except Exception:
+        pass  # já pode estar morto mesmo, ignora erro ao tentar fechar
+
+    print("    Reiniciando sessão do navegador...")
+    options = webdriver.ChromeOptions()
+    return webdriver.Chrome(options=options)
+
+
+def _corpo_da_materia_carregou(driver):
+    """True quando pelo menos um parágrafo do corpo REAL da matéria já
+    renderizou. Não confundir com a legenda de foto (outro <p> que pode
+    aparecer mais cedo, mas fica em uma estrutura diferente) — esperar só
+    por "qualquer <p> dentro de main" deixava brecha pra capturar a
+    página cedo demais, antes do corpo terminar de carregar."""
+    try:
+        driver.find_element(By.CSS_SELECTOR, "main div[dir='ltr'] > p")
+        return True
+    except Exception:
+        return False
+
+
+def _texto_parece_valido(texto):
+    """Validação pós-extração: descarta resultados curtos demais ou que
+    claramente vazaram metadado (autor/tempo de leitura) — sinal de que a
+    página foi capturada num estado incompleto, apesar da espera."""
+    if not texto or len(texto) < 200:
+        return False
+    if "Author," in texto or "Tempo de leitura" in texto:
+        return False
+    return True
+
+
+def extrair_dados_materia(driver, url, tentativas=3):
+    """Extrai título, autor(es), corpo do texto e imagem de uma matéria da
+    BBC usando seletores específicos da estrutura real do site — mais
+    confiável que a heurística genérica que usávamos antes (news-please),
+    que às vezes incluía o bloco de metadados (autor/data/tempo de
+    leitura) como se fosse parte do corpo do texto.
+
+    Reaproveita o driver do Selenium já aberto pra listagem (a mesma
+    sessão de navegador, sem abrir uma conexão HTTP nova) — também
+    resolve casos em que o conteúdo só aparece depois da renderização
+    via JavaScript, que uma requisição HTTP simples não executaria.
+
+    Tenta várias vezes se o resultado parecer capturado num estado
+    incompleto (ver _texto_parece_valido) — em coletas históricas
+    longas, rodando centenas de páginas em sequência, é mais provável
+    que uma página específica seja capturada cedo demais na renderização;
+    tentar de novo resolve a maioria desses casos sem intervenção manual."""
+    titulo, autores, texto_completo, imagem_url = "", [], "", ""
+
+    for tentativa in range(1, tentativas + 1):
+        if not carregar_pagina_com_retry(driver, url, tentativas=2, espera_entre_tentativas=5):
+            raise FalhaConexaoDriver(
+                f"Não foi possível carregar {url} — sessão do navegador pode estar travada"
+            )
+
+        try:
+            WebDriverWait(driver, 15).until(_corpo_da_materia_carregou)
+        except Exception:
+            pass  # segue mesmo assim -- a validação abaixo decide se aceita ou tenta de novo
+
+        soup = BeautifulSoup(driver.page_source, "lxml")
+        main = soup.find("main") or soup
+
+        h1 = main.find("h1") or soup.find("h1")
+        titulo = h1.get_text(strip=True) if h1 else ""
+
+        autores = []
+        byline = main.select_one("section[data-testid='byline']")
+        if byline:
+            for li in byline.select("ul[role='list'] li"):
+                texto_li = li.get_text(strip=True)
+                match = re.match(r"^Author,\s*(.+)$", texto_li)
+                if match:
+                    autores.append(match.group(1).strip())
+
+        # Corpo do texto: só <p> e <h2> que são filhos DIRETOS de <div dir="ltr">
+        # dentro de <main> — isola o texto real, sem metadados/anúncios/
+        # recomendações/promoções (que usam outras estruturas na página).
+        blocos_texto = []
+        for div in main.select("div[dir='ltr']"):
+            for filho in div.find_all(["p", "h2"], recursive=False):
+                texto_filho = filho.get_text(strip=True)
+                if texto_filho:
+                    blocos_texto.append(texto_filho)
+
+        texto_completo = "\n\n".join(blocos_texto)
+
+        if _texto_parece_valido(texto_completo):
+            figura = main.find("figure")
+            if figura:
+                img = figura.find("img")
+                if img and img.get("src"):
+                    imagem_url = img["src"]
+            break
+
+        if tentativa < tentativas:
+            print(f"    Extração suspeita (tentativa {tentativa}/{tentativas}), tentando de novo...")
+            time.sleep(2)
+
+    return {
+        "title": titulo,
+        "text": texto_completo,
+        "description": "",
+        "authors": autores,
+        "image_url": imagem_url,
+    }
+
+
+def extrair_conteudo(driver, cards_novos):
     textos = []
 
     for card in cards_novos:
         try:
-            article = NewsPlease.from_url(card["url"])
+            dados = extrair_dados_materia(driver, card["url"])
+
+            if not _texto_parece_valido(dados["text"]):
+                raise ValueError(
+                    "Corpo do texto vazio ou suspeito mesmo após tentativas — "
+                    "possível mudança de estrutura na página"
+                )
 
             textos.append({
                 "url": card["url"],
                 "section": EDITORIA,
-                "title": article.title or card["title"],
-                "text": article.maintext,
-                "description": article.description,
-                "author": limpar_autores(article.authors),
-                "image_url": article.image_url,
+                "title": dados["title"] or card["title"],
+                "text": dados["text"],
+                "description": dados["description"],
+                "author": limpar_autores(dados["authors"]),
+                "image_url": dados["image_url"],
                 "date": card["date_dt"].strftime("%d/%m/%Y"),
                 "veiculo": VEICULO,
             })
-            print(f"  ✓ {article.title or card['title']}")
+            print(f"  ✓ {dados['title'] or card['title']}")
+
+        except FalhaConexaoDriver as e:
+            # A sessão do navegador parece ter travado de vez (não um
+            # timeout pontual) — reinicia do zero e tenta essa mesma
+            # matéria mais uma vez antes de desistir dela.
+            print(f"    {e}")
+            driver = reiniciar_driver(driver)
+
+            try:
+                dados = extrair_dados_materia(driver, card["url"])
+                if not _texto_parece_valido(dados["text"]):
+                    raise ValueError("Texto inválido mesmo após reiniciar o navegador")
+
+                textos.append({
+                    "url": card["url"],
+                    "section": EDITORIA,
+                    "title": dados["title"] or card["title"],
+                    "text": dados["text"],
+                    "description": dados["description"],
+                    "author": limpar_autores(dados["authors"]),
+                    "image_url": dados["image_url"],
+                    "date": card["date_dt"].strftime("%d/%m/%Y"),
+                    "veiculo": VEICULO,
+                })
+                print(f"  ✓ {dados['title'] or card['title']} (após reiniciar o navegador)")
+
+            except Exception as e2:
+                textos.append({
+                    "url": card["url"],
+                    "section": EDITORIA,
+                    "title": card["title"],
+                    "text": "ERRO!!!",
+                    "description": "ERRO!!!",
+                    "author": "ERRO!!!",
+                    "image_url": "ERRO!!!",
+                    "date": card["date_dt"].strftime("%d/%m/%Y"),
+                    "veiculo": VEICULO,
+                })
+                print(f"  ✗ Erro definitivo mesmo após reiniciar o navegador: {e2}")
 
         except Exception as e:
             textos.append({
@@ -355,7 +533,7 @@ def extrair_conteudo(cards_novos):
 
         time.sleep(INTERVALO_ENTRE_MATERIAS)
 
-    return pd.DataFrame(textos)
+    return pd.DataFrame(textos), driver
 
 
 def salvar_incremental(df_novo):
@@ -399,7 +577,12 @@ def main():
         print("Especifique --auto (coleta diária) ou --historico-dias N (backfill).")
         sys.exit(1)
 
-    hoje_dt = datetime.now()
+    # Normalizado para meia-noite: sem isso, a hora exata em que o script
+    # roda vaza pro cálculo de data_limite_dt (ex: hoje - 567 dias vira
+    # "01/01/2025 14:30" em vez de "01/01/2025 00:00"), fazendo a
+    # comparação >= excluir incorretamente matérias do próprio dia-limite
+    # (que têm hora 00:00:00), mesmo estando dentro do período pedido.
+    hoje_dt = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
 
     if args.auto:
         limite_seguranca_dt = hoje_dt - timedelta(days=MARGEM_SEGURANCA_DIAS)
