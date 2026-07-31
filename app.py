@@ -35,6 +35,40 @@ st.caption(
 )
 
 
+def _hex_para_rgb(hex_cor):
+    """Converte '#RRGGBB' em 'R, G, B' (string), para montar rgba() em CSS."""
+    hex_cor = hex_cor.lstrip("#")
+    r, g, b = (int(hex_cor[i:i + 2], 16) for i in (0, 2, 4))
+    return f"{r}, {g}, {b}"
+
+
+def obter_cores_tema():
+    """Retorna as cores ink/ink2/paper certas para o tema ativo no momento
+    (claro ou escuro). Necessário porque os componentes renderizados via
+    components.html() (gauge, sismógrafo, rede semântica) rodam num iframe
+    isolado, sem acesso às variáveis CSS do Streamlit (var(--text-color)
+    etc.) — o Python precisa saber qual tema está ativo e já mandar a cor
+    resolvida pronta dentro do HTML gerado.
+
+    st.context.theme.type existe desde o Streamlit 1.46; em versões mais
+    antigas (ou nos raros casos em que ainda não resolveu no primeiro
+    render), cai no tema escuro como padrão — mesmo comportamento que o
+    app sempre teve antes desta função existir."""
+    try:
+        tema_ativo = st.context.theme.type
+    except Exception:
+        tema_ativo = None
+
+    if tema_ativo == "light":
+        cores = {"ink": "#FAF8F2", "ink2": "#F0EDE2", "paper": "#10151F"}
+    else:
+        cores = {"ink": "#10151F", "ink2": "#171E2C", "paper": "#E8E4D8"}
+
+    cores["ink2_rgb"] = _hex_para_rgb(cores["ink2"])
+    return cores
+
+
+
 import nltk
 from nltk.corpus import stopwords
 
@@ -805,9 +839,9 @@ st.markdown(
     """
     <style>
     :root {
-        --obs-ink: #10151F;
-        --obs-ink-2: #171E2C;
-        --obs-paper: #E8E4D8;
+        --obs-ink: var(--background-color);
+        --obs-ink-2: var(--secondary-background-color);
+        --obs-paper: var(--text-color);
         --obs-muted: #8B93A7;
         --obs-grid: #2A3244;
         --obs-teal: #5FBFA0;
@@ -1057,9 +1091,9 @@ razao_dia = (
 GAUGE_HTML_TEMPLATE = """
 <style>
   #gauge-root {
-    --ink: #10151F;
-    --ink-2: #171E2C;
-    --paper: #E8E4D8;
+    --ink: __INK__;
+    --ink-2: __INK2__;
+    --paper: __PAPER__;
     --muted: #8B93A7;
     --grid: #2A3244;
     --fonte-mono: 'SF Mono', 'Cascadia Code', Consolas, Menlo, monospace;
@@ -1116,8 +1150,8 @@ GAUGE_HTML_TEMPLATE = """
       <path d="M 40,150 A 110,110 0 0,1 100.1,52.0" fill="none" stroke="#5FBFA0" stroke-width="16" stroke-linecap="round" opacity="0.85"/>
       <path d="M 100.1,52.0 A 110,110 0 0,1 199.9,52.0" fill="none" stroke="#8B93A7" stroke-width="16" stroke-linecap="round" opacity="0.55"/>
       <path d="M 199.9,52.0 A 110,110 0 0,1 260,150" fill="none" stroke="#E8A33D" stroke-width="16" stroke-linecap="round" opacity="0.85"/>
-      <line id="agulha" x1="150" y1="150" x2="150" y2="55" stroke="#E8E4D8" stroke-width="4" stroke-linecap="round"/>
-      <circle cx="150" cy="150" r="8" fill="#E8E4D8"/>
+      <line id="agulha" x1="150" y1="150" x2="150" y2="55" stroke="__PAPER__" stroke-width="4" stroke-linecap="round"/>
+      <circle cx="150" cy="150" r="8" fill="__PAPER__"/>
     </svg>
   </div>
   <div class="gauge-leitura">
@@ -1155,6 +1189,8 @@ def renderizar_gauge_ritmo(eyebrow, rotulo_valor, ritmo_valor, ritmo_hist, razao
     razao_clamp = max(0.0, min(razao, 2.0))
     angulo_final = (razao_clamp / 2.0) * 180 - 90
 
+    cores = obter_cores_tema()
+
     if razao < 0.7:
         status = "Abaixo do ritmo histórico"
         cor_status = "#5FBFA0"
@@ -1163,12 +1199,15 @@ def renderizar_gauge_ritmo(eyebrow, rotulo_valor, ritmo_valor, ritmo_hist, razao
         cor_status = "#E8A33D"
     else:
         status = "Na média histórica"
-        cor_status = "#E8E4D8"
+        cor_status = cores["paper"]
 
     diferenca_pct = (razao - 1.0) * 100
 
     gauge_html = (
         GAUGE_HTML_TEMPLATE
+        .replace("__INK__", cores["ink"])
+        .replace("__INK2__", cores["ink2"])
+        .replace("__PAPER__", cores["paper"])
         .replace("__EYEBROW__", html.escape(eyebrow))
         .replace("__ROTULO_VALOR__", html.escape(rotulo_valor))
         .replace("__ROTULO_HISTORICO__", html.escape(rotulo_historico))
@@ -2130,9 +2169,9 @@ if secao_selecionada == "Sismógrafo":
         SISMOGRAFO_HTML = """
 <style>
   #sismografo-root {
-    --ink: #10151F;
-    --ink-2: #171E2C;
-    --paper: #E8E4D8;
+    --ink: __INK__;
+    --ink-2: __INK2__;
+    --paper: __PAPER__;
     --muted: #8B93A7;
     --grid: #2A3244;
     --teal: #5FBFA0;
@@ -2386,7 +2425,14 @@ if secao_selecionada == "Sismógrafo":
 </script>
 """
 
-        SISMOGRAFO_HTML = SISMOGRAFO_HTML.replace("__EVENTOS_JSON__", eventos_json)
+        cores = obter_cores_tema()
+        SISMOGRAFO_HTML = (
+            SISMOGRAFO_HTML
+            .replace("__EVENTOS_JSON__", eventos_json)
+            .replace("__INK__", cores["ink"])
+            .replace("__INK2__", cores["ink2"])
+            .replace("__PAPER__", cores["paper"])
+        )
 
         components.html(SISMOGRAFO_HTML, height=560, scrolling=False)
 
@@ -2519,7 +2565,7 @@ if secao_selecionada == "Análise IA":
                 imagem_materia = str(materia.get("Imagem", "")).strip()
 
                 if url_materia.startswith("http"):
-                    titulo_html = f'<a href="{url_materia}" target="_blank" style="color:#E8E4D8;text-decoration:none;">{titulo_materia}</a>'
+                    titulo_html = f'<a href="{url_materia}" target="_blank" style="color:var(--text-color);text-decoration:none;">{titulo_materia}</a>'
                 else:
                     titulo_html = titulo_materia
 
@@ -2826,21 +2872,22 @@ def renderizar_rede_semantica_html(elementos, legenda, titulo):
     elementos_json = json.dumps(elementos, ensure_ascii=False)
     legenda_json = json.dumps(legenda, ensure_ascii=False)
     titulo_escapado = html.escape(titulo)
+    cores = obter_cores_tema()
 
     return f"""
 <style>
-  body {{ margin: 0; font-family: -apple-system, 'Segoe UI', Arial, sans-serif; background: #10151F; }}
+  body {{ margin: 0; font-family: -apple-system, 'Segoe UI', Arial, sans-serif; background: {cores['ink']}; }}
   #cy {{ width: 100%; height: 720px; display: block; }}
   #titulo {{
     position: absolute; top: 16px; left: 20px; z-index: 10;
-    background: rgba(23,30,44,0.92); padding: 10px 14px; border-radius: 8px;
-    font-size: 15px; font-weight: bold; color: #E8E4D8;
+    background: rgba({cores['ink2_rgb']},0.92); padding: 10px 14px; border-radius: 8px;
+    font-size: 15px; font-weight: bold; color: {cores['paper']};
     border: 1px solid #2A3244;
   }}
   #legenda {{
     position: absolute; top: 62px; left: 20px; z-index: 10;
-    background: rgba(23,30,44,0.92); padding: 12px 14px; border-radius: 8px;
-    font-size: 13px; color: #E8E4D8; max-width: 320px;
+    background: rgba({cores['ink2_rgb']},0.92); padding: 12px 14px; border-radius: 8px;
+    font-size: 13px; color: {cores['paper']}; max-width: 320px;
     border: 1px solid #2A3244;
   }}
   .legenda-titulo {{
