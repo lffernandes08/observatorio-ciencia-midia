@@ -11,8 +11,7 @@ import streamlit.components.v1 as components
 import pandas as pd
 import plotly.express as px
 import plotly.io as pio
-
-pio.templates.default = "plotly_dark"
+import plotly.graph_objects as go
 
 try:
     import networkx as nx
@@ -23,7 +22,7 @@ except ImportError:
 
 
 st.set_page_config(
-    page_title="Observatório de ciência na mídia",
+    page_title="Observatório de ciência na mídi",
     layout="wide"
 )
 
@@ -60,12 +59,61 @@ def obter_cores_tema():
         tema_ativo = None
 
     if tema_ativo == "light":
-        cores = {"ink": "#FAF8F2", "ink2": "#F0EDE2", "paper": "#10151F"}
+        # Light mode permanece disponível, mas a identidade principal do app
+        # é a versão escura. O creme evita um branco puro excessivamente duro.
+        cores = {
+            "ink": "#FAF8F2",
+            "ink2": "#F0EDE2",
+            "paper": "#10151F",
+            "muted": "#697169",
+            "grid": "#D7D5CC",
+        }
     else:
-        cores = {"ink": "#10151F", "ink2": "#171E2C", "paper": "#E8E4D8"}
+        # Paleta principal: grafite levemente esverdeado, menos azulado que a
+        # versão anterior. Mantém a linguagem de observatório/dados sem ficar
+        # com aparência de terminal ou dashboard tecnológico genérico.
+        cores = {
+            "ink": "#151817",
+            "ink2": "#1D211F",
+            "paper": "#E8E4D8",
+            "muted": "#92998F",
+            "grid": "#303632",
+        }
 
+    cores["ink_rgb"] = _hex_para_rgb(cores["ink"])
     cores["ink2_rgb"] = _hex_para_rgb(cores["ink2"])
     return cores
+
+
+# O Plotly não herda automaticamente o fundo do Streamlit. Sem esta etapa,
+# gráficos continuariam usando o preto/azul do template plotly_dark mesmo após
+# a troca da identidade visual. O template abaixo acompanha o tema ativo.
+_CORES_PLOTLY = obter_cores_tema()
+_TEMA_BASE_PLOTLY = "plotly_white" if _CORES_PLOTLY["ink"] == "#FAF8F2" else "plotly_dark"
+pio.templates["observatorio"] = go.layout.Template(
+    layout=dict(
+        paper_bgcolor=_CORES_PLOTLY["ink"],
+        plot_bgcolor=_CORES_PLOTLY["ink"],
+        font=dict(color=_CORES_PLOTLY["paper"]),
+        colorway=[
+            "#5FBFA0", "#E8A33D", "#8B78C6", "#D97575",
+            "#6CA6C1", "#B7A66A", "#7FA37C", "#C787A8",
+        ],
+        xaxis=dict(
+            gridcolor=_CORES_PLOTLY["grid"],
+            linecolor=_CORES_PLOTLY["grid"],
+            zerolinecolor=_CORES_PLOTLY["grid"],
+        ),
+        yaxis=dict(
+            gridcolor=_CORES_PLOTLY["grid"],
+            linecolor=_CORES_PLOTLY["grid"],
+            zerolinecolor=_CORES_PLOTLY["grid"],
+        ),
+        legend=dict(font=dict(color=_CORES_PLOTLY["paper"])),
+        title=dict(font=dict(color=_CORES_PLOTLY["paper"])),
+    )
+)
+pio.templates.default = f"{_TEMA_BASE_PLOTLY}+observatorio"
 
 
 
@@ -835,19 +883,52 @@ def mostrar_periodo_no_topo(periodo_label, escala_label=None):
     )
 
 
+cores_ui = obter_cores_tema()
+
 st.markdown(
-    """
+    f"""
     <style>
-    :root {
-        --obs-ink: var(--background-color);
-        --obs-ink-2: var(--secondary-background-color);
-        --obs-paper: var(--text-color);
-        --obs-muted: #8B93A7;
-        --obs-grid: #2A3244;
+    :root {{
+        --obs-ink: {cores_ui["ink"]};
+        --obs-ink-2: {cores_ui["ink2"]};
+        --obs-paper: {cores_ui["paper"]};
+        --obs-muted: {cores_ui["muted"]};
+        --obs-grid: {cores_ui["grid"]};
         --obs-teal: #5FBFA0;
         --obs-amber: #E8A33D;
-    }
-    .painel-eyebrow {
+    }}
+
+    /* Superfícies nativas do Streamlit: força a mesma paleta usada pelos
+       cards/componentes customizados para evitar fundos de famílias diferentes. */
+    .stApp,
+    [data-testid="stAppViewContainer"],
+    [data-testid="stMain"] {{
+        background-color: var(--obs-ink);
+        color: var(--obs-paper);
+    }}
+
+    [data-testid="stSidebar"],
+    [data-testid="stSidebar"] > div:first-child {{
+        background-color: var(--obs-ink-2);
+    }}
+
+    [data-testid="stHeader"] {{
+        background-color: var(--obs-ink);
+    }}
+
+    /* Campos e controles ficam um tom acima do fundo, sem criar caixas azuladas. */
+    [data-baseweb="input"] > div,
+    [data-baseweb="select"] > div,
+    [data-baseweb="popover"] > div,
+    div[data-baseweb="base-input"] {{
+        background-color: var(--obs-ink-2);
+        border-color: var(--obs-grid);
+    }}
+
+    hr {{
+        border-color: var(--obs-grid) !important;
+    }}
+    .painel-eyebrow {{
         font-family: 'SF Mono', 'Cascadia Code', Consolas, Menlo, monospace;
         font-size: 0.72rem;
         letter-spacing: 0.16em;
@@ -857,15 +938,15 @@ st.markdown(
         display: flex;
         align-items: center;
         gap: 8px;
-    }
-    .painel-eyebrow::before {
+    }}
+    .painel-eyebrow::before {{
         content: "";
         width: 7px; height: 7px;
         border-radius: 50%;
         background: var(--obs-amber);
         box-shadow: 0 0 8px var(--obs-amber);
-    }
-    .card-panorama {
+    }}
+    .card-panorama {{
         background: var(--obs-ink-2);
         border: 1px solid var(--obs-grid);
         border-left: 3px solid var(--obs-teal);
@@ -874,12 +955,12 @@ st.markdown(
         margin-bottom: 14px;
         min-height: 150px;
         transition: transform 0.18s ease, border-color 0.18s ease;
-    }
-    .card-panorama:hover {
+    }}
+    .card-panorama:hover {{
         transform: translateY(-3px);
         border-left-color: var(--obs-amber);
-    }
-    .card-titulo {
+    }}
+    .card-titulo {{
         font-family: 'SF Mono', 'Cascadia Code', Consolas, Menlo, monospace;
         font-size: 0.82rem;
         font-weight: 600;
@@ -887,13 +968,13 @@ st.markdown(
         margin-bottom: 14px;
         text-transform: uppercase;
         letter-spacing: 0.05em;
-    }
-    .tags {
+    }}
+    .tags {{
         display: flex;
         flex-wrap: wrap;
         gap: 8px;
-    }
-    .tag {
+    }}
+    .tag {{
         background: rgba(95,191,160,0.10);
         border: 1px solid rgba(95,191,160,0.35);
         color: var(--obs-paper);
@@ -901,22 +982,22 @@ st.markdown(
         padding: 6px 12px;
         font-size: 0.88rem;
         line-height: 1.2;
-    }
+    }}
 
     /* Rankings com peso visível (card_ranking) — barra de proporção +
     número ao lado de cada item, para não esconder a magnitude relativa
     entre o 1º e o último colocado do ranking. */
-    .ranking-lista {
+    .ranking-lista {{
         display: flex;
         flex-direction: column;
         gap: 7px;
-    }
-    .ranking-linha {
+    }}
+    .ranking-linha {{
         display: flex;
         align-items: center;
         gap: 10px;
-    }
-    .ranking-rotulo {
+    }}
+    .ranking-rotulo {{
         flex: 0 0 42%;
         width: 42%;
         font-size: 0.84rem;
@@ -924,29 +1005,29 @@ st.markdown(
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
-    }
-    .ranking-barra-fundo {
+    }}
+    .ranking-barra-fundo {{
         flex: 1 1 auto;
         height: 12px;
         background: rgba(95,191,160,0.08);
         border-radius: 6px;
         overflow: hidden;
-    }
-    .ranking-barra-preenchida {
+    }}
+    .ranking-barra-preenchida {{
         height: 100%;
         background: var(--obs-teal);
         border-radius: 6px;
         min-width: 3px;
-    }
-    .ranking-contagem {
+    }}
+    .ranking-contagem {{
         flex: 0 0 auto;
         min-width: 28px;
         text-align: right;
         font-family: 'SF Mono', 'Cascadia Code', Consolas, Menlo, monospace;
         font-size: 0.78rem;
         color: var(--obs-muted);
-    }
-    .insight-box {
+    }}
+    .insight-box {{
         background: var(--obs-ink-2);
         border: 1px solid var(--obs-grid);
         border-left: 5px solid var(--obs-amber);
@@ -957,42 +1038,42 @@ st.markdown(
         font-size: 1rem;
         line-height: 1.5;
         color: var(--obs-paper);
-    }
-    .insight-title {
+    }}
+    .insight-title {{
         font-weight: 700;
         margin-bottom: 6px;
         color: var(--obs-paper);
-    }
+    }}
 
     /* Nuvem de palavras-chave (IA) */
-    .nuvem-container {
+    .nuvem-container {{
         display: flex;
         flex-wrap: wrap;
         gap: 10px;
         align-items: center;
         padding: 20px 6px;
-    }
-    .chip-nuvem {
+    }}
+    .chip-nuvem {{
         display: inline-block;
         padding: 6px 14px;
         border-radius: 999px;
         line-height: 1.3;
         font-weight: 600;
         transition: transform 0.15s ease;
-    }
-    .chip-nuvem:hover {
+    }}
+    .chip-nuvem:hover {{
         transform: scale(1.08);
-    }
-    .chip-nuvem.tom-a {
+    }}
+    .chip-nuvem.tom-a {{
         background: rgba(95,191,160,0.12);
         border: 1px solid rgba(95,191,160,0.45);
         color: #9FE0C7;
-    }
-    .chip-nuvem.tom-b {
+    }}
+    .chip-nuvem.tom-b {{
         background: rgba(232,163,61,0.12);
         border: 1px solid rgba(232,163,61,0.45);
         color: #F3C784;
-    }
+    }}
     </style>
     """,
     unsafe_allow_html=True
@@ -1094,8 +1175,8 @@ GAUGE_HTML_TEMPLATE = """
     --ink: __INK__;
     --ink-2: __INK2__;
     --paper: __PAPER__;
-    --muted: #8B93A7;
-    --grid: #2A3244;
+    --muted: #92998F;
+    --grid: #303632;
     --fonte-mono: 'SF Mono', 'Cascadia Code', Consolas, Menlo, monospace;
     --fonte-sans: -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
     background: var(--ink-2);
@@ -1148,7 +1229,7 @@ GAUGE_HTML_TEMPLATE = """
     <div class="gauge-eyebrow">__EYEBROW__</div>
     <svg viewBox="0 0 300 165" xmlns="http://www.w3.org/2000/svg">
       <path d="M 40,150 A 110,110 0 0,1 100.1,52.0" fill="none" stroke="#5FBFA0" stroke-width="16" stroke-linecap="round" opacity="0.85"/>
-      <path d="M 100.1,52.0 A 110,110 0 0,1 199.9,52.0" fill="none" stroke="#8B93A7" stroke-width="16" stroke-linecap="round" opacity="0.55"/>
+      <path d="M 100.1,52.0 A 110,110 0 0,1 199.9,52.0" fill="none" stroke="#92998F" stroke-width="16" stroke-linecap="round" opacity="0.55"/>
       <path d="M 199.9,52.0 A 110,110 0 0,1 260,150" fill="none" stroke="#E8A33D" stroke-width="16" stroke-linecap="round" opacity="0.85"/>
       <line id="agulha" x1="150" y1="150" x2="150" y2="55" stroke="__PAPER__" stroke-width="4" stroke-linecap="round"/>
       <circle cx="150" cy="150" r="8" fill="__PAPER__"/>
@@ -2172,8 +2253,8 @@ if secao_selecionada == "Sismógrafo":
     --ink: __INK__;
     --ink-2: __INK2__;
     --paper: __PAPER__;
-    --muted: #8B93A7;
-    --grid: #2A3244;
+    --muted: #92998F;
+    --grid: #303632;
     --teal: #5FBFA0;
     --amber: #E8A33D;
     --fonte-serif: Georgia, 'Iowan Old Style', 'Palatino Linotype', 'Times New Roman', serif;
@@ -2470,7 +2551,7 @@ if secao_selecionada == "Análise IA":
         rotulo_historico=f"Histórico de {nome_dia_semana_hoje}s"
     )
     st.markdown(
-        f'<span style="font-size:0.85rem;color:#8B93A7;">📊 Comparado à média histórica '
+        f'<span style="font-size:0.85rem;color:#92998F;">📊 Comparado à média histórica '
         f'de <b>{nome_dia_semana_hoje}s</b> especificamente '
         f'({ritmo_historico_dia_semana_hoje:.1f} matéria(s)/dia)</span> '
         f'{icone_ajuda("Não a média geral do corpus — mídia costuma publicar menos ciência aos fins de semana, então comparar contra a média geral penalizaria domingos e sábados injustamente.")}',
@@ -2588,10 +2669,10 @@ if secao_selecionada == "Análise IA":
                         {imagem_html}
                         <div style="flex:1;min-width:0;">
                             <div style="font-family:'SF Mono',Consolas,monospace;font-size:0.7rem;
-                                        color:#8B93A7;text-transform:uppercase;letter-spacing:0.05em;
+                                        color:#92998F;text-transform:uppercase;letter-spacing:0.05em;
                                         margin-bottom:8px;">{editoria_materia} · {veiculo_materia}</div>
                             <div style="font-weight:600;margin-bottom:10px;line-height:1.4;">{titulo_html}</div>
-                            <div style="font-size:0.8rem;color:#8B93A7;font-style:italic;">{autor_materia}</div>
+                            <div style="font-size:0.8rem;color:#92998F;font-style:italic;">{autor_materia}</div>
                         </div>
                     </div>
                     """,
@@ -2755,7 +2836,7 @@ def construir_elementos_rede(listas_termos, top_clusters=8):
     comunidade_para_indice = {c: i for i, c in enumerate(maiores_comunidades)}
 
     cores = [
-        "#5FBFA0", "#E8A33D", "#8B93A7", "#9467BD",
+        "#5FBFA0", "#E8A33D", "#92998F", "#9467BD",
         "#E07A5F", "#4D908E", "#F2CC8F", "#277DA1"
     ]
 
@@ -2858,7 +2939,7 @@ def construir_elementos_rede(listas_termos, top_clusters=8):
 
     outras = sum(q for c, q in freq_comunidades.items() if c not in maiores_comunidades)
     if outras > 0:
-        legenda.append({"nome": "Outras comunidades", "cor": "#3A4258", "cluster": 999, "n": outras})
+        legenda.append({"nome": "Outras comunidades", "cor": "#424942", "cluster": 999, "n": outras})
 
     return elementos, legenda
 
@@ -2882,13 +2963,13 @@ def renderizar_rede_semantica_html(elementos, legenda, titulo):
     position: absolute; top: 16px; left: 20px; z-index: 10;
     background: rgba({cores['ink2_rgb']},0.92); padding: 10px 14px; border-radius: 8px;
     font-size: 15px; font-weight: bold; color: {cores['paper']};
-    border: 1px solid #2A3244;
+    border: 1px solid #303632;
   }}
   #legenda {{
     position: absolute; top: 62px; left: 20px; z-index: 10;
     background: rgba({cores['ink2_rgb']},0.92); padding: 12px 14px; border-radius: 8px;
     font-size: 13px; color: {cores['paper']}; max-width: 320px;
-    border: 1px solid #2A3244;
+    border: 1px solid #303632;
   }}
   .legenda-titulo {{
     font-weight: bold; margin-bottom: 8px; font-family: 'SF Mono', Consolas, monospace;
@@ -2897,7 +2978,7 @@ def renderizar_rede_semantica_html(elementos, legenda, titulo):
   .item-legenda {{ display: flex; align-items: flex-start; margin-bottom: 7px; gap: 8px; line-height: 1.25; }}
   .cor-legenda {{ width: 14px; height: 14px; border-radius: 50%; display: inline-block; flex: 0 0 14px; margin-top: 2px; }}
   .texto-legenda {{ flex: 1; }}
-  .n-legenda {{ color: #8B93A7; font-size: 12px; }}
+  .n-legenda {{ color: #92998F; font-size: 12px; }}
 </style>
 
 <div id="titulo">{titulo_escapado}</div>
@@ -2979,7 +3060,7 @@ const cy = cytoscape({{
             'z-compound-depth': 'top'
         }} }},
         {{ selector: 'edge', style: {{
-            'width': 'data(width)', 'line-color': '#4A5468', 'opacity': 0.55, 'curve-style': 'bezier'
+            'width': 'data(width)', 'line-color': '#4D5752', 'opacity': 0.55, 'curve-style': 'bezier'
         }} }},
         {{ selector: 'node[tipo = "termo"]:hover', style: {{ 'border-width': 4, 'border-color': '#E8A33D', 'font-size': 20, 'overlay-opacity': 0.4 }} }},
         {{ selector: 'edge:hover', style: {{ 'line-color': '#E8A33D', 'opacity': 0.9 }} }},
