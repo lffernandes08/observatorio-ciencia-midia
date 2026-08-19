@@ -22,7 +22,7 @@ except ImportError:
 
 
 st.set_page_config(
-    page_title="Observatório de ciência na mídi",
+    page_title="Observatório de ciência na mídia",
     layout="wide"
 )
 
@@ -42,43 +42,22 @@ def _hex_para_rgb(hex_cor):
 
 
 def obter_cores_tema():
-    """Retorna as cores ink/ink2/paper certas para o tema ativo no momento
-    (claro ou escuro). Necessário porque os componentes renderizados via
-    components.html() (gauge, sismógrafo, rede semântica) rodam num iframe
-    isolado, sem acesso às variáveis CSS do Streamlit (var(--text-color)
-    etc.) — o Python precisa saber qual tema está ativo e já mandar a cor
-    resolvida pronta dentro do HTML gerado.
+    """Retorna as cores ink/ink2/paper/muted/grid usadas nos componentes
+    renderizados via components.html() (gauge, sismógrafo, rede
+    semântica) — eles rodam num iframe isolado, sem acesso às variáveis
+    CSS do Streamlit (var(--text-color) etc.), então o Python precisa
+    mandar a cor já resolvida pronta dentro do HTML gerado.
 
-    st.context.theme.type existe desde o Streamlit 1.46; em versões mais
-    antigas (ou nos raros casos em que ainda não resolveu no primeiro
-    render), cai no tema escuro como padrão — mesmo comportamento que o
-    app sempre teve antes desta função existir."""
-    try:
-        tema_ativo = st.context.theme.type
-    except Exception:
-        tema_ativo = None
-
-    if tema_ativo == "light":
-        # Light mode permanece disponível, mas a identidade principal do app
-        # é a versão escura. O creme evita um branco puro excessivamente duro.
-        cores = {
-            "ink": "#FAF8F2",
-            "ink2": "#F0EDE2",
-            "paper": "#10151F",
-            "muted": "#697169",
-            "grid": "#D7D5CC",
-        }
-    else:
-        # Paleta principal: grafite levemente esverdeado, menos azulado que a
-        # versão anterior. Mantém a linguagem de observatório/dados sem ficar
-        # com aparência de terminal ou dashboard tecnológico genérico.
-        cores = {
-            "ink": "#151817",
-            "ink2": "#1D211F",
-            "paper": "#E8E4D8",
-            "muted": "#92998F",
-            "grid": "#303632",
-        }
+    Paleta única: grafite levemente esverdeado, menos azulado que a
+    versão anterior. Mantém a linguagem de observatório/dados sem ficar
+    com aparência de terminal ou dashboard tecnológico genérico."""
+    cores = {
+        "ink": "#151817",
+        "ink2": "#1D211F",
+        "paper": "#E8E4D8",
+        "muted": "#92998F",
+        "grid": "#303632",
+    }
 
     cores["ink_rgb"] = _hex_para_rgb(cores["ink"])
     cores["ink2_rgb"] = _hex_para_rgb(cores["ink2"])
@@ -89,7 +68,7 @@ def obter_cores_tema():
 # gráficos continuariam usando o preto/azul do template plotly_dark mesmo após
 # a troca da identidade visual. O template abaixo acompanha o tema ativo.
 _CORES_PLOTLY = obter_cores_tema()
-_TEMA_BASE_PLOTLY = "plotly_white" if _CORES_PLOTLY["ink"] == "#FAF8F2" else "plotly_dark"
+_TEMA_BASE_PLOTLY = "plotly_dark"
 pio.templates["observatorio"] = go.layout.Template(
     layout=dict(
         paper_bgcolor=_CORES_PLOTLY["ink"],
@@ -619,19 +598,84 @@ data_mais_recente_str = (
 if data_mais_recente_str:
     dias_desde_atualizacao = (pd.Timestamp.now().normalize() - data_mais_recente_dt).days
     if dias_desde_atualizacao <= 1:
-        rotulo_frescor = "🟢"
+        cor_frescor = "#5FBFA0"
     elif dias_desde_atualizacao <= 4:
-        rotulo_frescor = "🟡"
+        cor_frescor = "#E8A33D"
     else:
-        rotulo_frescor = "🔴"
-    st.caption(f"{rotulo_frescor} Dados atualizados até **{data_mais_recente_str}**")
+        cor_frescor = "#D97575"
+    st.markdown(
+        f'<div style="display:flex;align-items:center;gap:8px;'
+        f'color:#92998F;font-size:0.85rem;margin-bottom:14px;">'
+        f'<span style="width:8px;height:8px;border-radius:50%;flex-shrink:0;'
+        f'background:{cor_frescor};box-shadow:0 0 6px {cor_frescor};"></span>'
+        f'Dados atualizados até <strong style="color:#E8E4D8;">{data_mais_recente_str}</strong>'
+        f'</div>',
+        unsafe_allow_html=True
+    )
+
+
+# =========================
+# Navegação entre seções
+# =========================
+# Fica no topo do conteúdo principal (não mais na sidebar), como o primeiro
+# elemento de fato interativo da página — a ideia é que "Cobertura do dia"
+# seja a primeira coisa que o usuário veja e entenda, com as demais seções
+# visíveis logo ao lado, não escondidas atrás de um menu lateral.
+#
+# Implementado com st.button() em vez de st.tabs() de propósito: st.tabs()
+# renderiza o conteúdo de TODAS as abas a cada execução do script (só
+# esconde visualmente as inativas), o que rodaria a lógica pesada de todas
+# as 5 seções a cada interação. Com botões + session_state, só o código da
+# seção realmente selecionada roda — mesmo comportamento de performance que
+# o st.sidebar.radio() de antes.
+SECOES = ["Cobertura do dia", "Visão geral", "Temas", "Sismógrafo", "Rede semântica"]
+
+# key= de um widget vira uma classe CSS (st-key-<chave>), usada mais abaixo
+# para estilizar os botões de navegação sem afetar outros botões do app.
+# Precisa ser um slug sem espaço/acento — "Cobertura do dia" como chave
+# geraria uma classe CSS inválida (espaço separa múltiplas classes em HTML).
+SECOES_SLUG = {
+    "Cobertura do dia": "cobertura-dia",
+    "Visão geral": "visao-geral",
+    "Temas": "temas",
+    "Sismógrafo": "sismografo",
+    "Rede semântica": "rede-semantica",
+}
+
+if "secao_selecionada" not in st.session_state:
+    st.session_state["secao_selecionada"] = SECOES[0]
+
+secao_antes_do_clique = st.session_state["secao_selecionada"]
+
+cols_nav = st.columns(len(SECOES))
+for col_nav, nome_secao in zip(cols_nav, SECOES):
+    with col_nav:
+        ativo = st.session_state["secao_selecionada"] == nome_secao
+        if st.button(
+            nome_secao,
+            key=f"nav_{SECOES_SLUG[nome_secao]}",
+            use_container_width=True,
+            type="primary" if ativo else "secondary"
+        ):
+            st.session_state["secao_selecionada"] = nome_secao
+
+# Se o clique mudou a seção, força uma nova execução: sem isso, o botão
+# recém-clicado só apareceria destacado (type="primary") na PRÓXIMA
+# interação, não na atual — porque o "ativo" de cada botão é calculado
+# antes do clique daquele mesmo botão ser processado, dentro do mesmo loop.
+if st.session_state["secao_selecionada"] != secao_antes_do_clique:
+    st.rerun()
+
+secao_selecionada = st.session_state["secao_selecionada"]
+
+st.divider()
 
 
 # =========================
 # Filtros
 # =========================
 
-st.sidebar.header("🧭 Explorar")
+st.sidebar.header("Explorar")
 st.sidebar.subheader("Período")
 
 data_min = df["date_dt"].min().date()
@@ -675,21 +719,6 @@ if len(veiculos_disponiveis) > 1:
 else:
     veiculos_selecionados = veiculos_disponiveis
 
-st.sidebar.subheader("Seção")
-
-secao_selecionada = st.sidebar.radio(
-    "Escolha a visualização",
-    [
-        "Análise IA",
-        "Visão geral",
-        "Temas",
-        "Sismógrafo",
-        "Rede semântica"
-    ],
-    index=0,
-    key="secao_selecionada"
-)
-
 SECOES_COM_AGRUPAMENTO_TEMPORAL = {"Visão geral", "Temas", "Sismógrafo"}
 
 if secao_selecionada in SECOES_COM_AGRUPAMENTO_TEMPORAL:
@@ -700,15 +729,15 @@ if secao_selecionada in SECOES_COM_AGRUPAMENTO_TEMPORAL:
         index=0
     )
 else:
-    # "Análise IA" e "Rede semântica" não usam agrupamento temporal — o
+    # "Cobertura do dia" e "Rede semântica" não usam agrupamento temporal — o
     # controle fica escondido em vez de aparecer sem nenhum efeito visível
     # nessas telas. O valor abaixo nunca chega a ser usado por essas
     # seções (só existe para a variável não ficar indefinida).
     escala = "Dia"
 
 st.sidebar.caption(
-    "\"Análise IA\" sempre traz um resumo do dia mais recente no topo, além da "
-    "análise do período selecionado aqui em cima. As demais seções usam o "
+    "\"Cobertura do dia\" sempre traz um resumo do dia mais recente no topo, além da "
+    "análise do período selecionado aqui ao lado. As demais seções usam o "
     "período e a escala selecionados."
 )
 
@@ -740,7 +769,7 @@ def termos_populares_corpus(top_n=8):
 termos_chips = termos_populares_corpus(8)
 
 if termos_chips:
-    st.sidebar.caption("🔥 Termos em alta no corpus")
+    st.sidebar.caption("Termos em alta no corpus")
     col_chips = st.sidebar.columns(2)
     for i, termo in enumerate(termos_chips):
         with col_chips[i % 2]:
@@ -759,9 +788,9 @@ if busca:
         df["Texto"].str.lower().str.contains(busca_lower, regex=False)
     ]
 
-    st.sidebar.caption(f"🔎 {numero_br(len(df))} matéria(s) encontrada(s) para **{busca}**")
+    st.sidebar.caption(f"{numero_br(len(df))} matéria(s) encontrada(s) para **{busca}**")
 
-    with st.sidebar.expander("📈 Tendência do termo", expanded=False):
+    with st.sidebar.expander("Tendência do termo", expanded=False):
         if len(df) > 0:
             evolucao_mini = agrupar_por_escala(df, "Mês")
             if len(evolucao_mini) > 1:
@@ -832,7 +861,7 @@ def card_ranking(titulo, itens_com_contagem, icone=""):
         f'''<div class="ranking-linha">
               <div class="ranking-rotulo">{html.escape(str(item))}</div>
               <div class="ranking-barra-fundo">
-                <div class="ranking-barra-preenchida" style="width:{(contagem / maximo * 100):.0f}%;"></div>
+                <div class="ranking-barra-preenchida" style="--largura-final:{(contagem / maximo * 100):.0f}%;"></div>
               </div>
               <div class="ranking-contagem">{numero_br(contagem)}</div>
             </div>'''
@@ -862,7 +891,7 @@ def avisar_se_amostra_pequena(n_materias, contexto="esta classificação"):
     'Termos em ascensão', só que aqui é um limiar simples de tamanho)."""
     if n_materias < LIMIAR_AMOSTRA_PEQUENA:
         st.caption(
-            f"⚠ Baseado em poucas matérias (n={n_materias}) para {contexto} — "
+            f"Baseado em poucas matérias (n={n_materias}) para {contexto} — "
             "leia os rankings abaixo com cautela."
         )
 
@@ -877,7 +906,7 @@ def mostrar_periodo_no_topo(periodo_label, escala_label=None):
         f" · agrupado por {html.escape(escala_label).lower()}" if escala_label else ""
     )
     st.markdown(
-        f'<div class="painel-eyebrow">📅 Período selecionado: '
+        f'<div class="painel-eyebrow">Período selecionado: '
         f'{html.escape(periodo_label)}{sufixo_escala}</div>',
         unsafe_allow_html=True
     )
@@ -896,6 +925,43 @@ st.markdown(
         --obs-grid: {cores_ui["grid"]};
         --obs-teal: #5FBFA0;
         --obs-amber: #E8A33D;
+    }}
+
+    /* Animações discretas: entrada com leve subida (cards/blocos), entrada
+       escalonada (métricas), aparecimento suave (gráficos) e crescimento
+       de barra (rankings). Duração curta e easing sem "bounce"/elástico,
+       para dar sensação de fluidez sem chamar atenção para si mesmas. */
+    @keyframes obsEntrada {{
+        from {{ opacity: 0; transform: translateY(8px); }}
+        to   {{ opacity: 1; transform: translateY(0); }}
+    }}
+    @keyframes obsCrescerBarra {{
+        from {{ width: 0; }}
+    }}
+    @media (prefers-reduced-motion: reduce) {{
+        .card-panorama,
+        .insight-box,
+        .ranking-barra-preenchida,
+        div[data-testid="stMetric"],
+        div[data-testid="stPlotlyChart"] {{
+            animation: none !important;
+        }}
+    }}
+
+    /* Navegação entre seções (botões no topo do conteúdo). O seletor por
+       substring pega qualquer botão cuja key comece com "nav_", sem
+       precisar listar cada seção individualmente nem afetar outros
+       botões do app (ex: "Sortear outras", "Gerar síntese"). */
+    [class*="st-key-nav_"] button {{
+        border-radius: 999px !important;
+        font-family: 'SF Mono', 'Cascadia Code', Consolas, Menlo, monospace;
+        font-size: 0.82rem !important;
+        letter-spacing: 0.02em;
+        transition: transform 0.15s ease, filter 0.15s ease;
+    }}
+    [class*="st-key-nav_"] button:hover {{
+        transform: translateY(-1px);
+        filter: brightness(1.08);
     }}
 
     /* Superfícies nativas do Streamlit: força a mesma paleta usada pelos
@@ -928,6 +994,26 @@ st.markdown(
     hr {{
         border-color: var(--obs-grid) !important;
     }}
+
+    /* Métricas (st.metric): entrada escalonada por posição da coluna --
+       cada st.columns() gera uma sequência de [data-testid="stColumn"],
+       e cada uma delas atrasa um pouco mais que a anterior. Cobre até 6
+       colunas, mais que suficiente para as grades usadas no app. */
+    div[data-testid="stMetric"] {{
+        animation: obsEntrada 0.4s ease-out both;
+    }}
+    div[data-testid="stColumn"]:nth-child(1) div[data-testid="stMetric"] {{ animation-delay: 0s; }}
+    div[data-testid="stColumn"]:nth-child(2) div[data-testid="stMetric"] {{ animation-delay: 0.06s; }}
+    div[data-testid="stColumn"]:nth-child(3) div[data-testid="stMetric"] {{ animation-delay: 0.12s; }}
+    div[data-testid="stColumn"]:nth-child(4) div[data-testid="stMetric"] {{ animation-delay: 0.18s; }}
+    div[data-testid="stColumn"]:nth-child(5) div[data-testid="stMetric"] {{ animation-delay: 0.24s; }}
+    div[data-testid="stColumn"]:nth-child(6) div[data-testid="stMetric"] {{ animation-delay: 0.30s; }}
+
+    /* Gráficos Plotly: aparecimento suave, sem deslocamento (o próprio
+       gráfico já anima seus elementos internos em alguns casos). */
+    div[data-testid="stPlotlyChart"] {{
+        animation: obsEntrada 0.5s ease-out both;
+    }}
     .painel-eyebrow {{
         font-family: 'SF Mono', 'Cascadia Code', Consolas, Menlo, monospace;
         font-size: 0.72rem;
@@ -955,6 +1041,7 @@ st.markdown(
         margin-bottom: 14px;
         min-height: 150px;
         transition: transform 0.18s ease, border-color 0.18s ease;
+        animation: obsEntrada 0.4s ease-out both;
     }}
     .card-panorama:hover {{
         transform: translateY(-3px);
@@ -1018,6 +1105,8 @@ st.markdown(
         background: var(--obs-teal);
         border-radius: 6px;
         min-width: 3px;
+        width: var(--largura-final, 0%);
+        animation: obsCrescerBarra 0.5s ease-out both;
     }}
     .ranking-contagem {{
         flex: 0 0 auto;
@@ -1038,6 +1127,7 @@ st.markdown(
         font-size: 1rem;
         line-height: 1.5;
         color: var(--obs-paper);
+        animation: obsEntrada 0.45s ease-out both;
     }}
     .insight-title {{
         font-weight: 700;
@@ -1083,7 +1173,7 @@ analises_diarias = carregar_analise_diaria()
 df_keywords = carregar_keywords()
 
 # Matérias de hoje já respeitando o filtro de veículo da sidebar — usada
-# no sorteio de matérias na parte "Hoje" da seção Análise IA.
+# no sorteio de matérias na parte "Hoje" da seção Cobertura do dia.
 df_hoje_filtrado = (
     df_original[
         (df_original["date_dt"] == data_mais_recente_dt)
@@ -1304,7 +1394,7 @@ def renderizar_gauge_ritmo(eyebrow, rotulo_valor, ritmo_valor, ritmo_hist, razao
 
 
 # =========================
-# "Panorama do dia" foi fundido dentro da seção "Análise IA" (mais abaixo)
+# "Panorama do dia" foi fundido dentro da seção "Cobertura do dia" (mais abaixo)
 # — deixou de ser uma opção separada do menu lateral, para não duplicar os
 # cards de classificação que antes apareciam idênticos nas duas seções.
 # =========================
@@ -1476,7 +1566,7 @@ if secao_selecionada == "Visão geral":
         )
     with col_botao_amostra:
         st.markdown("<br>", unsafe_allow_html=True)
-        sortear_amostra_novamente = st.button("🔀 Sortear outras", key="btn_sortear_amostra_visao_geral")
+        sortear_amostra_novamente = st.button("Sortear outras", key="btn_sortear_amostra_visao_geral")
 
     st.caption(
         "Amostra aleatória do período/busca/veículo filtrados — não é um ranking "
@@ -1520,7 +1610,7 @@ if secao_selecionada == "Temas":
     mostrar_periodo_no_topo(periodo_label_sidebar, escala)
 
     st.markdown('<div class="painel-eyebrow">Temas</div>', unsafe_allow_html=True)
-    with st.expander("📖 Como ler esta seção (4 formas diferentes de medir o mesmo assunto)"):
+    with st.expander("Como ler esta seção (4 formas diferentes de medir o mesmo assunto)"):
         st.markdown(
             "Esta seção reúne 4 formas diferentes de responder \"do que a mídia "
             "está falando\", cada uma com um método distinto — elas vão discordar "
@@ -1539,7 +1629,7 @@ if secao_selecionada == "Temas":
 
     if df_keywords is not None:
         st.markdown(
-            f"### 🧠 Palavras-chave identificadas por IA "
+            f"### Palavras-chave identificadas por IA "
             f"{icone_ajuda('Extraídas via modelo de linguagem a partir do conteúdo de cada matéria — tendem a ser mais específicas que a contagem bruta de palavras e n-gramas abaixo, já que descartam termos genéricos e mantêm conceitos, instituições, tecnologias e atores.')}",
             unsafe_allow_html=True
         )
@@ -1630,7 +1720,7 @@ if secao_selecionada == "Temas":
         st.divider()
 
         st.markdown(
-            f"### 📈 Termos em ascensão "
+            f"### Termos em ascensão "
             f"{icone_ajuda('Diferente do ranking acima (que mostra o que já está em alta), compara a taxa de menções de cada palavra-chave na janela mais recente do período com a taxa no restante — sinaliza temas acelerando mesmo sem volume alto. Usa um teste estatístico de significância (não percentual bruto), para não confundir ruído de amostra pequena (1 menção virar 2 = +100%, sem significar nada) com aumento genuíno.')}",
             unsafe_allow_html=True
         )
@@ -2050,7 +2140,7 @@ if secao_selecionada == "Temas":
     if df_keywords is not None:
         st.divider()
         st.markdown(
-            f"### 🧠 Top palavras-chave animado por mês (IA) "
+            f"### Top palavras-chave animado por mês (IA) "
             f"{icone_ajuda('Mesma ideia da animação acima, mas usando as palavras-chave extraídas por IA em vez de n-gramas — costuma mostrar uma evolução mais limpa dos temas, sem ruído de palavras genéricas.')}",
             unsafe_allow_html=True
         )
@@ -2152,7 +2242,7 @@ if secao_selecionada == "Sismógrafo":
     mostrar_periodo_no_topo(periodo_label_sidebar, escala)
 
     st.markdown(
-        f"### 📡 Sismógrafo de cobertura "
+        f"### Sismógrafo de cobertura "
         f"{icone_ajuda('Detecta automaticamente os picos de publicação no período filtrado e transforma cada um em um boletim — a matéria mais representativa daquele momento.')}",
         unsafe_allow_html=True
     )
@@ -2529,15 +2619,15 @@ if secao_selecionada == "Sismógrafo":
     )
 
 
-if secao_selecionada == "Análise IA":
-    st.markdown('<div class="painel-eyebrow">Análise IA</div>', unsafe_allow_html=True)
-    st.subheader("🧠 Análise estruturada por IA")
+if secao_selecionada == "Cobertura do dia":
+    st.markdown('<div class="painel-eyebrow">Cobertura do dia</div>', unsafe_allow_html=True)
+    st.subheader("Análise estruturada por IA")
 
     # =========================
     # Parte 1: pulso de hoje — compacto, sempre o dia mais recente do
     # dataset, independente do período selecionado na barra lateral.
     # =========================
-    st.markdown(f"#### 📌 Hoje — {data_mais_recente_str}")
+    st.markdown(f"#### Hoje — {data_mais_recente_str}")
     st.caption(
         f"{numero_br(n_materias_hoje)} matéria(s) publicadas em {data_mais_recente_str} "
         f"({nome_dia_semana_hoje}, todos os veículos). Este resumo sempre mostra o dia "
@@ -2551,7 +2641,7 @@ if secao_selecionada == "Análise IA":
         rotulo_historico=f"Histórico de {nome_dia_semana_hoje}s"
     )
     st.markdown(
-        f'<span style="font-size:0.85rem;color:#92998F;">📊 Comparado à média histórica '
+        f'<span style="font-size:0.85rem;color:#92998F;">Comparado à média histórica '
         f'de <b>{nome_dia_semana_hoje}s</b> especificamente '
         f'({ritmo_historico_dia_semana_hoje:.1f} matéria(s)/dia)</span> '
         f'{icone_ajuda("Não a média geral do corpus — mídia costuma publicar menos ciência aos fins de semana, então comparar contra a média geral penalizaria domingos e sábados injustamente.")}',
@@ -2566,7 +2656,7 @@ if secao_selecionada == "Análise IA":
             st.markdown(
                 f"""
                 <div class="insight-box">
-                    <div class="insight-title">📈 Tendência do dia</div>
+                    <div class="insight-title">Tendência do dia</div>
                     {html.escape(texto_tendencia)}
                 </div>
                 """,
@@ -2580,7 +2670,7 @@ if secao_selecionada == "Análise IA":
             st.markdown(
                 f"""
                 <div class="insight-box">
-                    <div class="insight-title">📈 Tendência do dia (por veículo)</div>
+                    <div class="insight-title">Tendência do dia (por veículo)</div>
                     {linhas_tendencia_html}
                 </div>
                 """,
@@ -2588,12 +2678,12 @@ if secao_selecionada == "Análise IA":
             )
     else:
         st.caption(
-            "📈 Tendência do dia ainda não disponível para este dia/veículo."
+            "Tendência do dia ainda não disponível para este dia/veículo."
         )
 
     col_titulo_sorteio, col_botao_sorteio = st.columns([4, 1])
     with col_botao_sorteio:
-        sortear_novamente = st.button("🔀 Sortear outras", key="btn_sortear_materias")
+        sortear_novamente = st.button("Sortear outras", key="btn_sortear_materias")
 
     df_dia_completo = df_hoje_filtrado
 
@@ -2621,13 +2711,13 @@ if secao_selecionada == "Análise IA":
 
     with col_titulo_sorteio:
         if n_mostradas == 3:
-            st.markdown("##### 🎲 Três matérias do dia, para começar por algum lugar")
+            st.markdown("##### Três matérias do dia, para começar por algum lugar")
         elif n_mostradas > 0:
             st.markdown(
-                f"##### 🎲 {n_mostradas} matéria(s) do dia, para começar por algum lugar"
+                f"##### {n_mostradas} matéria(s) do dia, para começar por algum lugar"
             )
         else:
-            st.markdown("##### 🎲 Matérias do dia, para começar por algum lugar")
+            st.markdown("##### Matérias do dia, para começar por algum lugar")
 
     if materias_amostra is None or materias_amostra.empty:
         st.caption(
@@ -2686,7 +2776,7 @@ if secao_selecionada == "Análise IA":
     # =========================
     mostrar_periodo_no_topo(periodo_label_sidebar)
     st.markdown(
-        f"#### 🧬 Análise do período selecionado "
+        f"#### Análise do período selecionado "
         f"{icone_ajuda('Enquadramento, área, abrangência, instituições e pessoas são agregados a partir da classificação já feita por matéria — filtrar aqui não tem custo adicional de IA. Só a tendência do período e a síntese abaixo usam uma chamada de IA nova (sob demanda).')}",
         unsafe_allow_html=True
     )
@@ -2718,7 +2808,7 @@ if secao_selecionada == "Análise IA":
                 else f"{len(veiculos_selecionados)} veículo(s) selecionado(s)"
             )
             st.caption(
-                f"📊 {numero_br(resultado_classificacao['n_materias'])} matéria(s) "
+                f"{numero_br(resultado_classificacao['n_materias'])} matéria(s) "
                 f"classificada(s) no período ({rotulo_veiculo})."
             )
             avisar_se_amostra_pequena(resultado_classificacao["n_materias"], "o período selecionado")
@@ -2729,30 +2819,30 @@ if secao_selecionada == "Análise IA":
                 card_ranking(
                     "Enquadramentos predominantes",
                     resultado_classificacao["enquadramentos_predominantes"],
-                    "📰"
+                    ""
                 )
                 card_ranking(
                     "Áreas predominantes",
                     resultado_classificacao["areas_predominantes"],
-                    "🔬"
+                    ""
                 )
 
             with col2:
                 card_ranking(
                     "Instituições mais visíveis",
                     resultado_classificacao["instituicoes_mais_visiveis"],
-                    "🏛️"
+                    ""
                 )
                 card_ranking(
                     "Pessoas mais visíveis",
                     resultado_classificacao["pessoas_mais_visiveis"],
-                    "👤"
+                    ""
                 )
 
             card(
                 "Abrangência predominante",
                 [resultado_classificacao["abrangencia_predominante"]],
-                "🌎"
+                ""
             )
 
     st.divider()
@@ -2775,7 +2865,7 @@ if secao_selecionada == "Análise IA":
     else:
         chave_periodo = tuple(resultado_tendencia_periodo["tendencias_diarias"])
 
-        if st.button("🧬 Gerar síntese do período", key="btn_sintese_periodo"):
+        if st.button("Gerar síntese do período", key="btn_sintese_periodo"):
             with st.spinner("Sintetizando tendência do período..."):
                 try:
                     texto_sintese = sintetizar_tendencia_periodo(
@@ -3160,7 +3250,7 @@ if secao_selecionada == "Rede semântica":
     mostrar_periodo_no_topo(periodo_label_sidebar)
 
     st.markdown(
-        f"### 🕸️ Rede semântica de palavras-chave "
+        f"### Rede semântica de palavras-chave "
         f"{icone_ajuda('Grafo de coocorrência das palavras-chave extraídas por IA nas matérias do período filtrado — dois termos se conectam quando aparecem juntos na mesma matéria. Cores indicam comunidades detectadas automaticamente (algoritmo de Louvain). Atualiza dinamicamente com qualquer filtro.')}",
         unsafe_allow_html=True
     )
