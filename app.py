@@ -26,25 +26,17 @@ st.set_page_config(
     layout="wide"
 )
 
-# Título como botão (não st.title): funciona como link de volta pra home —
-# "Cobertura do dia" não tem mais botão no menu lateral (que agora é só
-# para explorar o histórico), então o único jeito de voltar pra ela depois
-# de navegar é clicando no título. O CSS mais abaixo (classe
-# st-key-home_titulo) remove a aparência de botão e deixa com cara de h1.
-if st.button(
-    "OBSERVATÓRIO DE CIÊNCIA NA MÍDIA",
-    key="home_titulo",
-    help="Voltar para Cobertura do dia"
-):
-    if st.session_state.get("secao_selecionada") != "Cobertura do dia":
-        st.session_state["secao_selecionada"] = "Cobertura do dia"
-        st.rerun()
+# Cabeçalho principal em HTML próprio para evitar cortes causados pelos
+# estilos internos dos botões do Streamlit.
 st.markdown(
-    '<div style="font-size:1.15rem;color:#92998F;margin-top:-6px;'
-    'margin-bottom:10px;">'
-    "Acompanhamento diário e exploração histórica da cobertura de ciência "
-    "na mídia brasileira."
-    "</div>",
+    """
+    <a class="observatorio-home-link" href="?secao=hoje" target="_self" title="Voltar para a cobertura do dia">
+        <div class="observatorio-titulo">OBSERVATÓRIO DE CIÊNCIA NA MÍDIA</div>
+    </a>
+    <div class="observatorio-subtitulo">
+        Acompanhamento diário e exploração histórica da cobertura de ciência na mídia brasileira.
+    </div>
+    """,
     unsafe_allow_html=True
 )
 
@@ -633,7 +625,7 @@ if data_mais_recente_str:
 # Filtros — "Período" vem primeiro na sidebar, acima dos botões de
 # navegação (a pedido do usuário).
 # =========================
-SECOES = ["Cobertura do dia", "Visão geral", "Temas", "Atores", "Sismógrafo", "Rede semântica"]
+SECOES = ["Cobertura do dia", "Visão geral", "Enquadramentos e temas", "Atores", "Sismógrafo", "Rede semântica"]
 
 # key= de um widget vira uma classe CSS (st-key-<chave>), usada mais abaixo
 # para estilizar os botões de navegação sem afetar outros botões do app.
@@ -642,7 +634,7 @@ SECOES = ["Cobertura do dia", "Visão geral", "Temas", "Atores", "Sismógrafo", 
 SECOES_SLUG = {
     "Cobertura do dia": "cobertura-dia",
     "Visão geral": "visao-geral",
-    "Temas": "temas",
+    "Enquadramentos e temas": "enquadramentos-temas",
     "Atores": "atores",
     "Sismógrafo": "sismografo",
     "Rede semântica": "rede-semantica",
@@ -651,35 +643,30 @@ SECOES_SLUG = {
 if "secao_selecionada" not in st.session_state:
     st.session_state["secao_selecionada"] = SECOES[0]
 
-# Lido já aqui (antes dos botões de navegação, mais abaixo) porque o filtro
-# de Período precisa saber qual seção está ativa pra decidir se deve se
-# esconder (ver "Cobertura do dia" logo adiante).
+# O título do observatório funciona como retorno para a home. O link adiciona
+# apenas um parâmetro efêmero à URL; ao detectá-lo, voltamos para "Cobertura
+# do dia" e limpamos o parâmetro para manter a URL normal.
+if st.query_params.get("secao") == "hoje":
+    st.session_state["secao_selecionada"] = "Cobertura do dia"
+    st.query_params.clear()
+
 secao_selecionada = st.session_state["secao_selecionada"]
 
-st.sidebar.header("EXPLORAR")
 st.sidebar.subheader("Selecione um período")
 
 data_min = df["date_dt"].min().date()
 data_max = df["date_dt"].max().date()
 
-if "periodo_filtro" not in st.session_state:
-    st.session_state["periodo_filtro"] = (data_min, data_max)
-
-# O filtro de período não tem efeito nenhum em "Cobertura do dia" (ver
-# comentário mais abaixo, junto de SECOES_COM_AGRUPAMENTO_TEMPORAL) — mas o
-# calendário fica sempre visível na sidebar (desabilitado nessa seção, não
-# escondido), porque escondê-lo dava a impressão de que o filtro tinha
-# sumido do app. O valor selecionado fica guardado em session_state
-# (key="periodo_filtro") e volta a valer assim que o usuário troca de seção.
-periodo_desabilitado = secao_selecionada == "Cobertura do dia"
-
+# O período selecionado fica guardado em session_state e pode ser alterado
+# em qualquer seção. Na home, ele não muda os dados de "Cobertura do dia",
+# mas permanece operacional para o usuário preparar a exploração histórica.
 periodo_selecionado = st.sidebar.date_input(
     "Selecione um período",
+    value=(data_min, data_max),
     min_value=data_min,
     max_value=data_max,
     format="DD/MM/YYYY",
     key="periodo_filtro",
-    disabled=periodo_desabilitado,
     label_visibility="collapsed"
 )
 
@@ -714,61 +701,53 @@ if len(veiculos_disponiveis) > 1:
 else:
     veiculos_selecionados = veiculos_disponiveis
 
-st.sidebar.divider()
-
 
 # =========================
-# Navegação entre seções
+# Navegação da exploração histórica
 # =========================
-# No menu lateral, abaixo do filtro de Período — a página principal mostra
-# só o conteúdo da seção selecionada, sem barra de botões no topo do
-# conteúdo. "Cobertura do dia" não entra nesta lista de botões: ela é a
-# home do app (SECOES[0]), acessada pelo título clicável no topo da página
-# principal, não por um botão de exploração — o menu lateral serve só pra
-# navegar pelo conteúdo histórico.
-#
-# Implementado com st.sidebar.button() em vez de st.tabs() de propósito:
-# st.tabs() renderiza o conteúdo de TODAS as abas a cada execução do script
-# (só esconde visualmente as inativas), o que rodaria a lógica pesada de
-# todas as 5 seções a cada interação. Com botões + session_state, só o
-# código da seção realmente selecionada roda.
+# A home é "Cobertura do dia" e não entra nessa navegação. O botão de entrada
+# para a exploração histórica fica sempre visível; ao clicar, são reveladas
+# as cinco formas de analisar o período selecionado.
+SECOES_EXPLORACAO = ["Visão geral", "Enquadramentos e temas", "Atores", "Sismógrafo", "Rede semântica"]
 secao_antes_do_clique = secao_selecionada
 
-st.sidebar.header("Navegar")
-for nome_secao in SECOES[1:]:
-    ativo = secao_selecionada == nome_secao
-    if st.sidebar.button(
-        nome_secao,
-        key=f"nav_{SECOES_SLUG[nome_secao]}",
-        use_container_width=True,
-        type="primary" if ativo else "secondary"
-    ):
-        st.session_state["secao_selecionada"] = nome_secao
+if "mostrar_navegacao_periodo" not in st.session_state:
+    st.session_state["mostrar_navegacao_periodo"] = (
+        secao_selecionada in SECOES_EXPLORACAO
+    )
 
-# Se o clique mudou a seção, força uma nova execução: sem isso, o botão
-# recém-clicado só apareceria destacado (type="primary") na PRÓXIMA
-# interação, não na atual — e o filtro de Período (acima) ficaria com a
-# seção antiga, já que foi lido antes deste bloco.
-if st.session_state["secao_selecionada"] != secao_antes_do_clique:
+rotulo_explorar = (
+    "Fechar exploração do período"
+    if st.session_state["mostrar_navegacao_periodo"]
+    else "Explorar período/veículo(s) selecionado(s)"
+)
+if st.sidebar.button(
+    rotulo_explorar,
+    key="toggle_explorar_periodo",
+    use_container_width=True,
+    type="primary"
+):
+    st.session_state["mostrar_navegacao_periodo"] = not st.session_state["mostrar_navegacao_periodo"]
     st.rerun()
 
-st.sidebar.divider()
+if st.session_state["mostrar_navegacao_periodo"]:
+    st.sidebar.caption("Escolha uma forma de analisar o período:")
+    for nome_secao in SECOES_EXPLORACAO:
+        ativo = secao_selecionada == nome_secao
+        if st.sidebar.button(
+            nome_secao,
+            key=f"nav_{SECOES_SLUG[nome_secao]}",
+            use_container_width=True,
+            type="primary" if ativo else "secondary"
+        ):
+            st.session_state["secao_selecionada"] = nome_secao
 
-SECOES_COM_AGRUPAMENTO_TEMPORAL = {"Visão geral", "Temas", "Sismógrafo"}
+    if st.session_state["secao_selecionada"] != secao_antes_do_clique:
+        st.rerun()
 
-if secao_selecionada in SECOES_COM_AGRUPAMENTO_TEMPORAL:
-    st.sidebar.subheader("Visualização temporal")
-    escala = st.sidebar.radio(
-        "Agrupar por",
-        ["Dia", "Mês", "Ano"],
-        index=0
-    )
-else:
-    # "Cobertura do dia" e "Rede semântica" não usam agrupamento temporal — o
-    # controle fica escondido em vez de aparecer sem nenhum efeito visível
-    # nessas telas. O valor abaixo nunca chega a ser usado por essas
-    # seções (só existe para a variável não ficar indefinida).
-    escala = "Dia"
+# Escala padrão. Cada gráfico que admite mudança de granularidade temporal
+# apresenta seu próprio controle junto ao gráfico.
+escala = "Mês"
 
 st.sidebar.subheader("Busca")
 
@@ -1027,10 +1006,7 @@ st.markdown(
         }}
     }}
 
-    /* Navegação entre seções (botões no menu lateral). O seletor por
-       substring pega qualquer botão cuja key comece com "nav_", sem
-       precisar listar cada seção individualmente nem afetar outros
-       botões do app (ex: "Sortear outras", "Gerar síntese"). */
+    /* Navegação horizontal da exploração histórica. */
     [class*="st-key-nav_"] button {{
         border-radius: 999px !important;
         font-family: 'SF Mono', 'Cascadia Code', Consolas, Menlo, monospace;
@@ -1043,30 +1019,51 @@ st.markdown(
         filter: brightness(1.08);
     }}
 
-    /* Título clicável (volta pra "Cobertura do dia"): st.button() estilizado
-       pra parecer um h1 comum, sem rastro de botão (fundo, borda, padding).
-       Cursor/hover deixam claro que é clicável sem gritar "botão". */
-    [class*="st-key-home_titulo"] button {{
-        background: transparent !important;
-        border: none !important;
-        padding: 0 !important;
-        margin: 0 !important;
-        box-shadow: none !important;
-        font-size: clamp(2.8rem, 5vw, 4.3rem) !important;
-        font-weight: 800 !important;
-        letter-spacing: -0.045em !important;
-        line-height: 1.2 !important;
-        color: var(--obs-paper) !important;
-        text-align: left !important;
-        justify-content: flex-start !important;
-        cursor: pointer;
+    .observatorio-home-link {{
+        display: inline-block;
+        text-decoration: none !important;
+        color: inherit !important;
+    }}
+    .observatorio-home-link:hover .observatorio-titulo {{
+        color: var(--obs-teal);
+    }}
+
+    /* Cabeçalho principal: grande e independente dos estilos de botões. */
+    .observatorio-titulo {{
+        font-size: clamp(1.9rem, 3.4vw, 3.25rem);
+        font-weight: 850;
+        letter-spacing: -0.045em;
+        line-height: 0.98;
+        color: var(--obs-paper);
+        max-width: 1200px;
+        margin: 0 0 12px 0;
+        white-space: normal;
+        overflow: visible;
+        text-wrap: balance;
         transition: color 0.15s ease;
     }}
-    [class*="st-key-home_titulo"] button:hover {{
-        color: var(--obs-teal) !important;
+    .observatorio-subtitulo {{
+        font-size: 1.15rem;
+        line-height: 1.35;
+        color: var(--obs-muted);
+        margin-bottom: 14px;
+        max-width: 980px;
     }}
-    [class*="st-key-home_titulo"] button:focus:not(:active) {{
-        box-shadow: none !important;
+    @media (max-width: 700px) {{
+        .observatorio-titulo {{
+            font-size: clamp(1.65rem, 7.5vw, 2.35rem);
+            line-height: 1.02;
+        }}
+    }}
+
+    .explorar-periodo-titulo {{
+        margin: 18px 0 10px 0;
+        font-family: 'SF Mono', 'Cascadia Code', Consolas, Menlo, monospace;
+        font-size: 0.78rem;
+        font-weight: 650;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--obs-muted);
     }}
 
     /* Superfícies nativas do Streamlit: força a mesma paleta usada pelos
@@ -1507,7 +1504,7 @@ def renderizar_gauge_ritmo(eyebrow, rotulo_valor, ritmo_valor, ritmo_hist, razao
 st.divider()
 
 if secao_selecionada == "Visão geral":
-    mostrar_periodo_no_topo(periodo_label_sidebar, escala)
+    mostrar_periodo_no_topo(periodo_label_sidebar)
 
     st.subheader("Indicadores gerais")
 
@@ -1586,6 +1583,14 @@ if secao_selecionada == "Visão geral":
             )
             st.plotly_chart(fig_veiculo_pizza, use_container_width=True)
 
+        escala = st.radio(
+            "Agrupar gráficos temporais por",
+            ["Dia", "Mês", "Ano"],
+            index=1,
+            horizontal=True,
+            key="escala_visao_geral"
+        )
+
         mapa_col_escala_veiculo = {
             "Dia": ("Data", "date_dt"),
             "Mês": ("Mês", "mes_dt"),
@@ -1613,6 +1618,15 @@ if secao_selecionada == "Visão geral":
         st.divider()
 
     st.subheader("Evolução da cobertura")
+
+    if len(veiculos_disponiveis) <= 1:
+        escala = st.radio(
+            "Agrupar por",
+            ["Dia", "Mês", "Ano"],
+            index=1,
+            horizontal=True,
+            key="escala_visao_geral"
+        )
 
     serie = agrupar_por_escala(df, escala)
 
@@ -1713,10 +1727,10 @@ if secao_selecionada == "Visão geral":
     st.divider()
 
 
-if secao_selecionada == "Temas":
-    mostrar_periodo_no_topo(periodo_label_sidebar, escala)
+if secao_selecionada == "Enquadramentos e temas":
+    mostrar_periodo_no_topo(periodo_label_sidebar)
 
-    st.markdown('<div class="painel-eyebrow">Temas</div>', unsafe_allow_html=True)
+    st.markdown('<div class="painel-eyebrow">Enquadramentos e temas</div>', unsafe_allow_html=True)
     with st.expander("Como ler esta seção (5 formas diferentes de medir o mesmo assunto)"):
         st.markdown(
             "Esta seção reúne 5 formas diferentes de responder \"do que a mídia "
@@ -2106,6 +2120,14 @@ if secao_selecionada == "Temas":
     st.divider()
 
     st.subheader("Evolução de um termo")
+
+    escala = st.radio(
+        "Agrupar por",
+        ["Dia", "Mês", "Ano"],
+        index=1,
+        horizontal=True,
+        key="escala_temas_termo"
+    )
 
     termo_busca = st.text_input(
         "Digite um termo para acompanhar ao longo do tempo",
@@ -2835,8 +2857,15 @@ if secao_selecionada == "Atores":
 
 
 if secao_selecionada == "Sismógrafo":
-    mostrar_periodo_no_topo(periodo_label_sidebar, escala)
-    renderizar_secao_sismografo("sismografo")
+    mostrar_periodo_no_topo(periodo_label_sidebar)
+    escala = st.radio(
+        "Agrupar sismógrafo por",
+        ["Dia", "Mês", "Ano"],
+        index=1,
+        horizontal=True,
+        key="escala_sismografo"
+    )
+    renderizar_secao_sismografo("sismografo", escala_sismografo=escala)
 
 
 if secao_selecionada == "Cobertura do dia":
