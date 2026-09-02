@@ -652,7 +652,7 @@ if st.query_params.get("secao") == "hoje":
 
 secao_selecionada = st.session_state["secao_selecionada"]
 
-st.sidebar.subheader("Selecione um período")
+st.sidebar.subheader("Selecione período e veículo(s) e clique em Explorar")
 
 data_min = df["date_dt"].min().date()
 data_max = df["date_dt"].max().date()
@@ -716,18 +716,20 @@ if "mostrar_navegacao_periodo" not in st.session_state:
         secao_selecionada in SECOES_EXPLORACAO
     )
 
-rotulo_explorar = (
-    "Fechar exploração do período"
-    if st.session_state["mostrar_navegacao_periodo"]
-    else "Explorar período/veículo(s) selecionado(s)"
-)
 if st.sidebar.button(
-    rotulo_explorar,
+    "Explorar",
     key="toggle_explorar_periodo",
     use_container_width=True,
     type="primary"
 ):
-    st.session_state["mostrar_navegacao_periodo"] = not st.session_state["mostrar_navegacao_periodo"]
+    # O clique é a ação de entrada na exploração histórica: abre as opções
+    # e leva imediatamente à Visão geral usando o período e os veículos
+    # que já foram aplicados acima aos dados filtrados. A flag abaixo vive
+    # apenas até o próximo rerun e permite dar à Visão geral um feedback de
+    # entrada um pouco mais marcado, sem inserir atraso artificial.
+    st.session_state["mostrar_navegacao_periodo"] = True
+    st.session_state["secao_selecionada"] = "Visão geral"
+    st.session_state["entrada_via_explorar"] = True
     st.rerun()
 
 if st.session_state["mostrar_navegacao_periodo"]:
@@ -808,12 +810,12 @@ def icone_ajuda(texto_explicativo):
     return f'<span title="{html.escape(texto_explicativo)}" style="cursor:help;opacity:0.55;font-size:0.82em;">ⓘ</span>'
 
 
-def card(titulo, itens, icone=""):
+def card(titulo, itens, icone="", atraso_ms=0):
     itens_seguros = [html.escape(str(item)) for item in itens]
     html_itens = "".join([f"<span class='tag'>{item}</span>" for item in itens_seguros])
     st.markdown(
         f"""
-        <div class="card-panorama">
+        <div class="card-panorama" style="--obs-delay:{int(atraso_ms)}ms;">
             <div class="card-titulo">{icone} {html.escape(titulo)}</div>
             <div class="tags">{html_itens}</div>
         </div>
@@ -822,7 +824,7 @@ def card(titulo, itens, icone=""):
     )
 
 
-def card_ranking(titulo, itens_com_contagem, icone=""):
+def card_ranking(titulo, itens_com_contagem, icone="", atraso_ms=0):
     """Como card(), mas para rankings de frequência — mostra uma barra de
     proporção e o número ao lado de cada item, em vez de uma nuvem de
     chips do mesmo tamanho. Sem isso, dois itens em posições muito
@@ -830,7 +832,7 @@ def card_ranking(titulo, itens_com_contagem, icone=""):
     'ranking sem número não é ranking'). itens_com_contagem é uma lista
     de tuplas (item, contagem), já ordenada do maior para o menor."""
     if not itens_com_contagem:
-        card(titulo, [], icone)
+        card(titulo, [], icone, atraso_ms=atraso_ms)
         return
 
     maximo = max(contagem for _, contagem in itens_com_contagem) or 1
@@ -848,7 +850,7 @@ def card_ranking(titulo, itens_com_contagem, icone=""):
 
     st.markdown(
         f"""
-        <div class="card-panorama">
+        <div class="card-panorama" style="--obs-delay:{int(atraso_ms)}ms;">
             <div class="card-titulo">{icone} {html.escape(titulo)}</div>
             <div class="ranking-lista">{linhas_html}</div>
         </div>
@@ -935,21 +937,37 @@ def renderizar_bloco_classificacao(df_base, contexto_rotulo, dimensoes=None):
     ]
     itens_a_mostrar = [item for item in ORDEM_DIMENSOES if item[0] in dimensoes]
 
+    # Escalonamento visual consistente: cada card entra 60 ms depois do
+    # anterior, respeitando a ordem conceitual mesmo quando o layout usa
+    # duas colunas. O atraso é curto o bastante para criar hierarquia sem
+    # tornar a interface lenta.
+    ATRASO_CARD_MS = 60
+    indice_animacao = 0
+
     if itens_a_mostrar:
         meio = (len(itens_a_mostrar) + 1) // 2
         col1, col2 = st.columns(2)
         with col1:
             for _, titulo, campo in itens_a_mostrar[:meio]:
-                card_ranking(titulo, resultado_classificacao[campo], "")
+                card_ranking(
+                    titulo, resultado_classificacao[campo], "",
+                    atraso_ms=indice_animacao * ATRASO_CARD_MS
+                )
+                indice_animacao += 1
         with col2:
             for _, titulo, campo in itens_a_mostrar[meio:]:
-                card_ranking(titulo, resultado_classificacao[campo], "")
+                card_ranking(
+                    titulo, resultado_classificacao[campo], "",
+                    atraso_ms=indice_animacao * ATRASO_CARD_MS
+                )
+                indice_animacao += 1
 
     if "abrangencia" in dimensoes:
         card(
             "Abrangência predominante",
             [resultado_classificacao["abrangencia_predominante"]],
-            ""
+            "",
+            atraso_ms=indice_animacao * ATRASO_CARD_MS
         )
 
 
@@ -996,27 +1014,126 @@ st.markdown(
     @keyframes obsCrescerBarra {{
         from {{ width: 0; }}
     }}
+    @keyframes obsSecaoEntrada {{
+        from {{ opacity: 0; transform: translateY(6px); }}
+        to   {{ opacity: 1; transform: translateY(0); }}
+    }}
+
+    .st-key-conteudo_secao {{
+        animation: obsSecaoEntrada 0.34s cubic-bezier(0.22, 1, 0.36, 1) both;
+        will-change: opacity, transform;
+    }}
+
+    /* Entrada imediatamente após o comando Explorar: usa a mesma linguagem
+       da transição normal entre seções, mas com um pouco mais de presença.
+       É o segundo estágio do feedback: botão responde ao clique -> Visão geral
+       confirma visualmente a mudança de contexto. */
+    @keyframes obsExplorarEntrada {{
+        from {{ opacity: 0; transform: translateY(8px); }}
+        to   {{ opacity: 1; transform: translateY(0); }}
+    }}
+    .st-key-conteudo_secao_explorar {{
+        animation: obsExplorarEntrada 0.42s cubic-bezier(0.22, 1, 0.36, 1) both;
+        will-change: opacity, transform;
+    }}
+
+    /* Feedback tátil/visual do botão Explorar. A compressão acontece já no
+       mouse-down/touch, antes de o Streamlit concluir o rerun. O estado :active
+       também reforça contraste por uma fração de segundo. */
+    .st-key-toggle_explorar_periodo button {{
+        transform: scale(1);
+        transition: transform 80ms ease-out, filter 80ms ease-out, box-shadow 80ms ease-out;
+        transform-origin: center;
+    }}
+    .st-key-toggle_explorar_periodo button:hover {{
+        filter: brightness(1.06);
+    }}
+    .st-key-toggle_explorar_periodo button:active {{
+        transform: scale(0.985) translateY(1px);
+        filter: brightness(1.14);
+        box-shadow: inset 0 0 0 1px rgba(232, 228, 216, 0.22) !important;
+    }}
+
     @media (prefers-reduced-motion: reduce) {{
         .card-panorama,
         .insight-box,
         .ranking-barra-preenchida,
         div[data-testid="stMetric"],
-        div[data-testid="stPlotlyChart"] {{
+        div[data-testid="stPlotlyChart"],
+        div[data-testid="stPlotlyChart"] .scatterlayer .js-line,
+        div[data-testid="stPlotlyChart"] .barlayer .point path,
+        .st-key-conteudo_secao,
+        .st-key-conteudo_secao_explorar,
+        [class*="st-key-nav_"] {{
             animation: none !important;
+            transform: none !important;
+            stroke-dashoffset: 0 !important;
+        }}
+        .st-key-toggle_explorar_periodo button {{
+            transition: none !important;
         }}
     }}
 
-    /* Navegação horizontal da exploração histórica. */
+    /* Navegação lateral da exploração histórica. Ao ser revelada pelo botão
+       Explorar, cada opção entra verticalmente com um pequeno atraso — um
+       acordeão discreto, sem aumentar o tempo real de navegação. */
+    @keyframes obsNavAcordeao {{
+        from {{
+            opacity: 0;
+            transform: translateY(-7px);
+        }}
+        to {{
+            opacity: 1;
+            transform: translateY(0);
+        }}
+    }}
+
+    [class*="st-key-nav_"] {{
+        animation: obsNavAcordeao 0.26s cubic-bezier(0.22, 1, 0.36, 1) both;
+        transform-origin: top center;
+    }}
+    .st-key-nav_visao-geral {{ animation-delay: 0ms; }}
+    .st-key-nav_enquadramentos-temas {{ animation-delay: 45ms; }}
+    .st-key-nav_atores {{ animation-delay: 90ms; }}
+    .st-key-nav_sismografo {{ animation-delay: 135ms; }}
+    .st-key-nav_rede-semantica {{ animation-delay: 180ms; }}
+
+    /* As opções deixam de parecer uma coleção de botões-pílula e passam a
+       funcionar visualmente como itens de navegação. */
     [class*="st-key-nav_"] button {{
-        border-radius: 999px !important;
+        border-radius: 8px !important;
+        border: 1px solid transparent !important;
+        border-left: 3px solid transparent !important;
+        background: transparent !important;
+        color: var(--obs-muted) !important;
         font-family: 'SF Mono', 'Cascadia Code', Consolas, Menlo, monospace;
         font-size: 0.82rem !important;
-        letter-spacing: 0.02em;
-        transition: transform 0.15s ease, filter 0.15s ease;
+        font-weight: 500 !important;
+        letter-spacing: 0.015em;
+        text-align: left !important;
+        justify-content: flex-start !important;
+        padding-left: 12px !important;
+        transition: background-color 0.16s ease, color 0.16s ease,
+                    border-color 0.16s ease, transform 0.16s ease;
     }}
     [class*="st-key-nav_"] button:hover {{
-        transform: translateY(-1px);
-        filter: brightness(1.08);
+        transform: translateX(2px);
+        color: var(--obs-paper) !important;
+        background: rgba(232, 228, 216, 0.045) !important;
+        border-left-color: rgba(95, 191, 160, 0.45) !important;
+    }}
+
+    /* A seção ativa é identificada pelo botão primary que o próprio Python já
+       atribui. A barra verde à esquerda + fundo um pouco mais claro cria um
+       estado persistente, sem depender apenas do estilo padrão do Streamlit. */
+    [class*="st-key-nav_"] button[kind="primary"],
+    [class*="st-key-nav_"] button[data-testid="stBaseButton-primary"] {{
+        color: var(--obs-paper) !important;
+        background: rgba(95, 191, 160, 0.10) !important;
+        border-color: rgba(95, 191, 160, 0.12) !important;
+        border-left-color: var(--obs-teal) !important;
+        font-weight: 650 !important;
+        box-shadow: none !important;
     }}
 
     .observatorio-home-link {{
@@ -1111,11 +1228,48 @@ st.markdown(
     div[data-testid="stColumn"]:nth-child(5) div[data-testid="stMetric"] {{ animation-delay: 0.24s; }}
     div[data-testid="stColumn"]:nth-child(6) div[data-testid="stMetric"] {{ animation-delay: 0.30s; }}
 
-    /* Gráficos Plotly: aparecimento suave, sem deslocamento (o próprio
-       gráfico já anima seus elementos internos em alguns casos). */
-    div[data-testid="stPlotlyChart"] {{
-        animation: obsEntrada 0.5s ease-out both;
+    /* Gráficos: o contêiner entra apenas em fade. Linhas e barras têm
+       animação própria no SVG do Plotly, para não repetir o movimento dos cards. */
+    @keyframes obsGraficoFade {{
+        from {{ opacity: 0; }}
+        to   {{ opacity: 1; }}
     }}
+    @keyframes obsDesenharLinha {{
+        from {{ stroke-dashoffset: 2400; }}
+        to   {{ stroke-dashoffset: 0; }}
+    }}
+    @keyframes obsBarraHorizontal {{
+        from {{ transform: scaleX(0.001); opacity: 0.45; }}
+        to   {{ transform: scaleX(1); opacity: 1; }}
+    }}
+
+    div[data-testid="stPlotlyChart"] {{
+        animation: obsGraficoFade 0.42s ease-out both;
+    }}
+
+    /* Séries de linha: o path é revelado progressivamente. O valor alto de
+       dasharray cobre com folga os gráficos usados no app; no fim a linha fica
+       visualmente idêntica à original. */
+    div[data-testid="stPlotlyChart"] .scatterlayer .js-line {{
+        stroke-dasharray: 2400;
+        stroke-dashoffset: 2400;
+        animation: obsDesenharLinha 0.95s cubic-bezier(0.22, 1, 0.36, 1) 0.10s forwards;
+    }}
+
+    /* Todos os px.bar atuais do observatório são horizontais: crescem da
+       esquerda para a direita, com pequenos atrasos por posição. */
+    div[data-testid="stPlotlyChart"] .barlayer .point path {{
+        transform-box: fill-box;
+        transform-origin: left center;
+        transform: scaleX(0.001);
+        animation: obsBarraHorizontal 0.58s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+    }}
+    div[data-testid="stPlotlyChart"] .barlayer .point:nth-child(1) path {{ animation-delay: 0.05s; }}
+    div[data-testid="stPlotlyChart"] .barlayer .point:nth-child(2) path {{ animation-delay: 0.09s; }}
+    div[data-testid="stPlotlyChart"] .barlayer .point:nth-child(3) path {{ animation-delay: 0.13s; }}
+    div[data-testid="stPlotlyChart"] .barlayer .point:nth-child(4) path {{ animation-delay: 0.17s; }}
+    div[data-testid="stPlotlyChart"] .barlayer .point:nth-child(5) path {{ animation-delay: 0.21s; }}
+    div[data-testid="stPlotlyChart"] .barlayer .point:nth-child(n+6) path {{ animation-delay: 0.25s; }}
     .painel-eyebrow {{
         font-family: 'SF Mono', 'Cascadia Code', Consolas, Menlo, monospace;
         font-size: 0.72rem;
@@ -1144,6 +1298,7 @@ st.markdown(
         min-height: 150px;
         transition: transform 0.18s ease, border-color 0.18s ease;
         animation: obsEntrada 0.4s ease-out both;
+        animation-delay: var(--obs-delay, 0ms);
     }}
     .card-panorama:hover {{
         transform: translateY(-3px);
@@ -1503,1983 +1658,2000 @@ def renderizar_gauge_ritmo(eyebrow, rotulo_valor, ritmo_valor, ritmo_hist, razao
 
 st.divider()
 
-if secao_selecionada == "Visão geral":
-    mostrar_periodo_no_topo(periodo_label_sidebar)
+# O clique em Explorar marca apenas a primeira renderização da Visão geral.
+# Depois dela, as trocas normais de seção voltam a usar a transição padrão.
+entrada_via_explorar = bool(st.session_state.pop("entrada_via_explorar", False))
+chave_conteudo_secao = (
+    "conteudo_secao_explorar"
+    if entrada_via_explorar and secao_selecionada == "Visão geral"
+    else "conteudo_secao"
+)
 
-    st.subheader("Indicadores gerais")
+with st.container(key=chave_conteudo_secao):
+    if secao_selecionada == "Visão geral":
+        mostrar_periodo_no_topo(periodo_label_sidebar)
 
-    col1, col2, col3, col4 = st.columns(4)
+        st.subheader("Indicadores gerais")
 
-    col1.metric("Matérias", numero_br(len(df)))
-    col2.metric("Autores", numero_br(df["Autor"].astype(str).nunique()))
-    col3.metric("Palavras", numero_br(int(df["Palavras"].sum())))
-    col4.metric(
-        "Média de palavras",
-        numero_br(int(df["Palavras"].mean())) if len(df) else "0"
-    )
+        col1, col2, col3, col4 = st.columns(4)
 
-    st.divider()
-
-    if len(veiculos_disponiveis) > 1:
-        st.markdown(
-            f"### Comparação por veículo "
-            f"{icone_ajuda('Contagem bruta mistura dois efeitos: foco editorial real em ciência e profundidade do histórico coletado por cada fonte (algumas têm mais dias de backfill que outras). A coluna Matérias/dia e o modo normalizado do gráfico dividem pelo número de dias efetivamente cobertos por cada veículo, para uma comparação mais justa.')}",
-            unsafe_allow_html=True
+        col1.metric("Matérias", numero_br(len(df)))
+        col2.metric("Autores", numero_br(df["Autor"].astype(str).nunique()))
+        col3.metric("Palavras", numero_br(int(df["Palavras"].sum())))
+        col4.metric(
+            "Média de palavras",
+            numero_br(int(df["Palavras"].mean())) if len(df) else "0"
         )
-
-        por_veiculo = (
-            df.groupby("Veículo")
-            .agg(Matérias=("URL", "count"), Média_palavras=("Palavras", "mean"))
-            .reset_index()
-        )
-        por_veiculo["Média_palavras"] = por_veiculo["Média_palavras"].round(0).fillna(0).astype(int)
-
-        # Dias efetivamente cobertos por CADA veículo dentro do período
-        # filtrado (não o período filtrado inteiro) — evita que um veículo
-        # com backfill mais raso pareça artificialmente menor só por ter
-        # menos dias de histórico no acervo.
-        cobertura_por_veiculo = df.groupby("Veículo")["date_dt"].agg(["min", "max"])
-        cobertura_por_veiculo["Dias_cobertos"] = (
-            (cobertura_por_veiculo["max"] - cobertura_por_veiculo["min"]).dt.days + 1
-        )
-        por_veiculo = por_veiculo.merge(
-            cobertura_por_veiculo[["Dias_cobertos"]], on="Veículo", how="left"
-        )
-        por_veiculo["Matérias/dia"] = (
-            por_veiculo["Matérias"] / por_veiculo["Dias_cobertos"]
-        ).round(2)
-
-        por_veiculo.columns = [
-            "Veículo", "Matérias", "Média de palavras", "Dias cobertos", "Matérias/dia"
-        ]
-        por_veiculo = por_veiculo.sort_values("Matérias", ascending=False)
-
-        col_tabela_veiculo, col_grafico_veiculo = st.columns([1, 2])
-
-        with col_tabela_veiculo:
-            st.dataframe(
-                por_veiculo[["Veículo", "Matérias", "Matérias/dia", "Média de palavras"]],
-                use_container_width=True, hide_index=True
-            )
-
-        with col_grafico_veiculo:
-            modo_comparacao = st.radio(
-                "Comparar por",
-                ["Contagem bruta", "Normalizado (matérias/dia)"],
-                horizontal=True,
-                key="modo_comparacao_veiculo"
-            )
-            coluna_valor_pizza = (
-                "Matérias" if modo_comparacao == "Contagem bruta" else "Matérias/dia"
-            )
-            titulo_pizza = (
-                "Participação por veículo (nº bruto de matérias)"
-                if modo_comparacao == "Contagem bruta"
-                else "Participação por veículo (matérias/dia coberto — normalizado)"
-            )
-            fig_veiculo_pizza = px.pie(
-                por_veiculo, names="Veículo", values=coluna_valor_pizza,
-                title=titulo_pizza, hole=0.4
-            )
-            st.plotly_chart(fig_veiculo_pizza, use_container_width=True)
-
-        escala = st.radio(
-            "Agrupar gráficos temporais por",
-            ["Dia", "Mês", "Ano"],
-            index=1,
-            horizontal=True,
-            key="escala_visao_geral"
-        )
-
-        mapa_col_escala_veiculo = {
-            "Dia": ("Data", "date_dt"),
-            "Mês": ("Mês", "mes_dt"),
-            "Ano": ("Ano", "ano_dt")
-        }
-        col_rotulo_v, col_ordem_v = mapa_col_escala_veiculo[escala]
-
-        serie_veiculo = (
-            df.groupby([col_rotulo_v, col_ordem_v, "Veículo"])
-            .size()
-            .reset_index(name="Matérias")
-            .sort_values(col_ordem_v)
-        )
-        serie_veiculo["Período"] = serie_veiculo[col_rotulo_v]
-
-        fig_veiculo_evolucao = px.line(
-            serie_veiculo,
-            x="Período", y="Matérias", color="Veículo",
-            markers=True,
-            title=f"Evolução por {escala.lower()}, por veículo"
-        )
-        fig_veiculo_evolucao.update_layout(xaxis_title="Período", xaxis_type="category")
-        st.plotly_chart(fig_veiculo_evolucao, use_container_width=True)
 
         st.divider()
 
-    st.subheader("Evolução da cobertura")
+        if len(veiculos_disponiveis) > 1:
+            st.markdown(
+                f"### Comparação por veículo "
+                f"{icone_ajuda('Contagem bruta mistura dois efeitos: foco editorial real em ciência e profundidade do histórico coletado por cada fonte (algumas têm mais dias de backfill que outras). A coluna Matérias/dia e o modo normalizado do gráfico dividem pelo número de dias efetivamente cobertos por cada veículo, para uma comparação mais justa.')}",
+                unsafe_allow_html=True
+            )
 
-    if len(veiculos_disponiveis) <= 1:
+            por_veiculo = (
+                df.groupby("Veículo")
+                .agg(Matérias=("URL", "count"), Média_palavras=("Palavras", "mean"))
+                .reset_index()
+            )
+            por_veiculo["Média_palavras"] = por_veiculo["Média_palavras"].round(0).fillna(0).astype(int)
+
+            # Dias efetivamente cobertos por CADA veículo dentro do período
+            # filtrado (não o período filtrado inteiro) — evita que um veículo
+            # com backfill mais raso pareça artificialmente menor só por ter
+            # menos dias de histórico no acervo.
+            cobertura_por_veiculo = df.groupby("Veículo")["date_dt"].agg(["min", "max"])
+            cobertura_por_veiculo["Dias_cobertos"] = (
+                (cobertura_por_veiculo["max"] - cobertura_por_veiculo["min"]).dt.days + 1
+            )
+            por_veiculo = por_veiculo.merge(
+                cobertura_por_veiculo[["Dias_cobertos"]], on="Veículo", how="left"
+            )
+            por_veiculo["Matérias/dia"] = (
+                por_veiculo["Matérias"] / por_veiculo["Dias_cobertos"]
+            ).round(2)
+
+            por_veiculo.columns = [
+                "Veículo", "Matérias", "Média de palavras", "Dias cobertos", "Matérias/dia"
+            ]
+            por_veiculo = por_veiculo.sort_values("Matérias", ascending=False)
+
+            col_tabela_veiculo, col_grafico_veiculo = st.columns([1, 2])
+
+            with col_tabela_veiculo:
+                st.dataframe(
+                    por_veiculo[["Veículo", "Matérias", "Matérias/dia", "Média de palavras"]],
+                    use_container_width=True, hide_index=True
+                )
+
+            with col_grafico_veiculo:
+                modo_comparacao = st.radio(
+                    "Comparar por",
+                    ["Contagem bruta", "Normalizado (matérias/dia)"],
+                    horizontal=True,
+                    key="modo_comparacao_veiculo"
+                )
+                coluna_valor_pizza = (
+                    "Matérias" if modo_comparacao == "Contagem bruta" else "Matérias/dia"
+                )
+                titulo_pizza = (
+                    "Participação por veículo (nº bruto de matérias)"
+                    if modo_comparacao == "Contagem bruta"
+                    else "Participação por veículo (matérias/dia coberto — normalizado)"
+                )
+                fig_veiculo_pizza = px.pie(
+                    por_veiculo, names="Veículo", values=coluna_valor_pizza,
+                    title=titulo_pizza, hole=0.4
+                )
+                st.plotly_chart(fig_veiculo_pizza, use_container_width=True)
+
+            escala = st.radio(
+                "Agrupar gráficos temporais por",
+                ["Dia", "Mês", "Ano"],
+                index=1,
+                horizontal=True,
+                key="escala_visao_geral"
+            )
+
+            mapa_col_escala_veiculo = {
+                "Dia": ("Data", "date_dt"),
+                "Mês": ("Mês", "mes_dt"),
+                "Ano": ("Ano", "ano_dt")
+            }
+            col_rotulo_v, col_ordem_v = mapa_col_escala_veiculo[escala]
+
+            serie_veiculo = (
+                df.groupby([col_rotulo_v, col_ordem_v, "Veículo"])
+                .size()
+                .reset_index(name="Matérias")
+                .sort_values(col_ordem_v)
+            )
+            serie_veiculo["Período"] = serie_veiculo[col_rotulo_v]
+
+            fig_veiculo_evolucao = px.line(
+                serie_veiculo,
+                x="Período", y="Matérias", color="Veículo",
+                markers=True,
+                title=f"Evolução por {escala.lower()}, por veículo"
+            )
+            fig_veiculo_evolucao.update_layout(xaxis_title="Período", xaxis_type="category")
+            st.plotly_chart(fig_veiculo_evolucao, use_container_width=True)
+
+            st.divider()
+
+        st.subheader("Evolução da cobertura")
+
+        if len(veiculos_disponiveis) <= 1:
+            escala = st.radio(
+                "Agrupar por",
+                ["Dia", "Mês", "Ano"],
+                index=1,
+                horizontal=True,
+                key="escala_visao_geral"
+            )
+
+        serie = agrupar_por_escala(df, escala)
+
+        fig = px.line(
+            serie,
+            x="Período",
+            y="Matérias",
+            markers=True,
+            title=f"Evolução por {escala.lower()}"
+        )
+
+        fig.update_layout(
+            xaxis_title="Período",
+            yaxis_title="Número de matérias",
+            xaxis_type="category"
+        )
+
+        fig.update_traces(
+            hovertemplate="<b>Período:</b> %{x}<br><b>Matérias:</b> %{y}<extra></extra>"
+        )
+
+        st.plotly_chart(fig, use_container_width=True)
+
+        st.divider()
+
+        st.subheader("Distribuição por editoria")
+
+        por_editoria = (
+            df.groupby("Editoria")
+            .size()
+            .reset_index(name="Matérias")
+            .sort_values("Matérias", ascending=True)
+        )
+
+        fig_editoria = px.bar(
+            por_editoria,
+            x="Matérias",
+            y="Editoria",
+            orientation="h",
+            title="Matérias por editoria",
+            text="Matérias"
+        )
+
+        st.plotly_chart(fig_editoria, use_container_width=True)
+
+        st.divider()
+
+        col_titulo_amostra, col_slider_amostra, col_botao_amostra = st.columns([3, 2, 1])
+        with col_titulo_amostra:
+            st.subheader("Amostra de matérias do período")
+        with col_slider_amostra:
+            tamanho_amostra = st.slider(
+                "Quantidade de matérias",
+                min_value=5, max_value=30, value=15,
+                key="tamanho_amostra_visao_geral"
+            )
+        with col_botao_amostra:
+            st.markdown("<br>", unsafe_allow_html=True)
+            sortear_amostra_novamente = st.button("Sortear outras", key="btn_sortear_amostra_visao_geral")
+
+        st.caption(
+            "Amostra aleatória do período/busca/veículo filtrados — não é um ranking "
+            "por nenhuma métrica. Clique em qualquer coluna da tabela para reordenar "
+            "como quiser."
+        )
+
+        chave_amostra_atual = (
+            len(df), df["date_dt"].min(), df["date_dt"].max(),
+            tuple(sorted(veiculos_selecionados)), busca, tamanho_amostra
+        )
+
+        precisa_sortear_amostra = (
+            sortear_amostra_novamente
+            or "amostra_visao_geral_chave" not in st.session_state
+            or st.session_state.get("amostra_visao_geral_chave") != chave_amostra_atual
+        )
+
+        if precisa_sortear_amostra:
+            n_amostra_visao_geral = min(tamanho_amostra, len(df))
+            st.session_state["amostra_visao_geral"] = (
+                df.sample(n=n_amostra_visao_geral) if n_amostra_visao_geral > 0 else df.iloc[0:0]
+            )
+            st.session_state["amostra_visao_geral_chave"] = chave_amostra_atual
+
+        tabela_amostra = st.session_state.get("amostra_visao_geral")
+
+        if tabela_amostra is None or tabela_amostra.empty:
+            st.caption("Nenhuma matéria disponível para amostragem com os filtros atuais.")
+        else:
+            tabela = tabela_amostra[["Data", "Título", "Editoria", "Autor", "Palavras", "URL"]].copy()
+
+            st.dataframe(
+                tabela,
+                use_container_width=True,
+                hide_index=True
+            )
+
+        st.divider()
+
+
+    if secao_selecionada == "Enquadramentos e temas":
+        mostrar_periodo_no_topo(periodo_label_sidebar)
+
+        st.markdown('<div class="painel-eyebrow">Enquadramentos e temas</div>', unsafe_allow_html=True)
+        with st.expander("Como ler esta seção (5 formas diferentes de medir o mesmo assunto)"):
+            st.markdown(
+                "Esta seção reúne 5 formas diferentes de responder \"do que a mídia "
+                "está falando\", cada uma com um método distinto — elas vão discordar "
+                "entre si às vezes, porque medem coisas diferentes.\n\n"
+                "- **Palavras-chave (IA)** captam *conceito* — a IA lê cada matéria e "
+                "extrai termos relevantes, descartando ruído.\n"
+                "- **Termos em ascensão** são as mesmas palavras-chave, mas testadas "
+                "estatisticamente para detectar o que está *acelerando*, não só o que "
+                "é mais frequente.\n"
+                "- **N-gramas** (palavras/bigramas/trigramas) captam *frequência "
+                "literal* de texto — mais bruto, sem julgamento de relevância, mas "
+                "não depende de IA.\n"
+                "- **Animações por mês** mostram qualquer uma das anteriores "
+                "evoluindo no tempo.\n"
+                "- **Enquadramentos e áreas** captam *categoria* — a IA classifica "
+                "cada matéria numa lista fixa de opções, em vez de extrair termos "
+                "livres."
+            )
+
+        st.markdown(
+            f"### Enquadramentos e áreas do período "
+            f"{icone_ajuda('Agregados a partir da classificação já feita por matéria, no período/veículo/busca selecionados na barra lateral — filtrar aqui não tem custo adicional de IA.')}",
+            unsafe_allow_html=True
+        )
+        renderizar_bloco_classificacao(df, "o período selecionado", dimensoes={"enquadramentos", "areas"})
+
+        st.divider()
+
+        if df_keywords is not None:
+            st.markdown(
+                f"### Palavras-chave identificadas por IA "
+                f"{icone_ajuda('Extraídas via modelo de linguagem a partir do conteúdo de cada matéria — tendem a ser mais específicas que a contagem bruta de palavras e n-gramas abaixo, já que descartam termos genéricos e mantêm conceitos, instituições, tecnologias e atores.')}",
+                unsafe_allow_html=True
+            )
+
+            urls_filtradas = set(df["URL"]) - {""}
+            kw_filtrado = df_keywords[df_keywords["url"].isin(urls_filtradas)]
+
+            if kw_filtrado.empty:
+                st.info(
+                    "Nenhuma matéria do período/busca filtrados possui palavras-chave "
+                    "extraídas ainda. Amplie os filtros na barra lateral, ou aguarde o "
+                    "próximo processamento."
+                )
+            else:
+                todas_kw = [
+                    termo
+                    for lista in kw_filtrado["palavras_chave_lista"]
+                    for termo in lista
+                    if termo and str(termo).strip()
+                ]
+
+                if not todas_kw:
+                    st.info("As matérias filtradas não possuem palavras-chave extraídas.")
+                else:
+                    contagem_kw = (
+                        pd.Series(Counter(todas_kw))
+                        .sort_values(ascending=False)
+                    )
+
+                    top_n_kw = st.slider(
+                        "Quantidade de palavras-chave em destaque",
+                        min_value=10, max_value=60, value=25,
+                        key="top_n_kw"
+                    )
+
+                    kw_top = contagem_kw.head(top_n_kw)
+
+                    # Nuvem de chips: tamanho da fonte proporcional à frequência
+                    freq_max = float(kw_top.max())
+                    freq_min = float(kw_top.min())
+
+                    def _tamanho_chip(freq):
+                        if freq_max == freq_min:
+                            return 1.15
+                        return 0.85 + (freq - freq_min) / (freq_max - freq_min) * 1.25
+
+                    chips_html = "".join(
+                        '<span class="chip-nuvem {tom}" style="font-size:{tam:.2f}rem;">{termo}</span>'.format(
+                            tom="tom-a" if i % 2 == 0 else "tom-b",
+                            tam=_tamanho_chip(freq),
+                            termo=html.escape(str(termo))
+                        )
+                        for i, (termo, freq) in enumerate(kw_top.items())
+                    )
+
+                    st.markdown(
+                        f'<div class="nuvem-container">{chips_html}</div>',
+                        unsafe_allow_html=True
+                    )
+
+                    with st.expander("Ver como tabela e gráfico"):
+                        df_kw_top = kw_top.reset_index()
+                        df_kw_top.columns = ["Palavra-chave", "Frequência"]
+
+                        col_kw_tab, col_kw_graf = st.columns([1, 2])
+
+                        with col_kw_tab:
+                            st.dataframe(
+                                df_kw_top, use_container_width=True, hide_index=True
+                            )
+
+                        with col_kw_graf:
+                            fig_kw = px.bar(
+                                df_kw_top.sort_values("Frequência"),
+                                x="Frequência",
+                                y="Palavra-chave",
+                                orientation="h",
+                                title="Palavras-chave mais frequentes (IA)",
+                                text="Frequência"
+                            )
+                            st.plotly_chart(fig_kw, use_container_width=True)
+
+                    st.caption(
+                        f"Cobertura: {numero_br(len(kw_filtrado))} de {numero_br(len(df))} "
+                        "matéria(s) no filtro atual possuem palavras-chave extraídas."
+                    )
+
+            st.divider()
+
+            st.markdown(
+                f"### Termos em ascensão "
+                f"{icone_ajuda('Diferente do ranking acima (que mostra o que já está em alta), compara a taxa de menções de cada palavra-chave na janela mais recente do período com a taxa no restante — sinaliza temas acelerando mesmo sem volume alto. Usa um teste estatístico de significância (não percentual bruto), para não confundir ruído de amostra pequena (1 menção virar 2 = +100%, sem significar nada) com aumento genuíno.')}",
+                unsafe_allow_html=True
+            )
+
+            col_janela, col_topn, col_sensibilidade = st.columns(3)
+            with col_janela:
+                dias_janela_recente = st.slider(
+                    "Janela recente (dias)",
+                    min_value=7, max_value=30, value=14,
+                    key="dias_janela_ascensao"
+                )
+            with col_topn:
+                top_n_ascensao = st.slider(
+                    "Quantidade de termos em destaque",
+                    min_value=5, max_value=20, value=10,
+                    key="top_n_ascensao"
+                )
+            with col_sensibilidade:
+                sensibilidade_ascensao = st.select_slider(
+                    "Sensibilidade do sinal",
+                    options=["Alta confiança", "Confiança padrão", "Mais permissivo"],
+                    value="Confiança padrão",
+                    key="sensibilidade_ascensao"
+                )
+
+            LIMIAR_Z = {
+                "Alta confiança": 2.33,     # ~99% de confiança unicaudal
+                "Confiança padrão": 1.64,   # ~95% de confiança unicaudal
+                "Mais permissivo": 1.28,    # ~90% de confiança unicaudal
+            }[sensibilidade_ascensao]
+
+            @st.cache_data
+            def detectar_termos_ascensao(chave_cache, dias_recente_param, top_n_param, limiar_z, min_ocorrencias=3):
+                """Compara, para cada palavra-chave, a taxa de menções (por dia) na
+                janela recente do período filtrado com a taxa no restante do
+                período (linha de base), usando um teste de significância para
+                duas taxas de Poisson independentes (aproximação de Wald):
+
+                    z = (taxa_recente - taxa_base) / sqrt(taxa_recente/dias_recente + taxa_base/dias_base)
+
+                Só termos com |z| acima do limiar escolhido (equivalente a um
+                nível de confiança) são sinalizados como 'em ascensão'. Isso
+                penaliza naturalmente contagens pequenas (que produzem z baixo,
+                mesmo com percentual de variação alto) e recompensa saltos
+                genuínos, mesmo quando o percentual parece modesto."""
+                kw_com_data = df.merge(
+                    df_keywords[["url", "palavras_chave_lista"]],
+                    left_on="URL", right_on="url", how="inner"
+                )
+
+                if kw_com_data.empty:
+                    return {"status": "sem_dados"}
+
+                data_min = kw_com_data["date_dt"].min()
+                data_max = kw_com_data["date_dt"].max()
+                dias_totais = (data_max - data_min).days + 1
+
+                if dias_totais < dias_recente_param * 2:
+                    return {"status": "periodo_curto", "dias_totais": dias_totais}
+
+                corte_recente = data_max - pd.Timedelta(days=dias_recente_param - 1)
+
+                recente = kw_com_data[kw_com_data["date_dt"] >= corte_recente]
+                base = kw_com_data[kw_com_data["date_dt"] < corte_recente]
+
+                dias_recente_real = (data_max - corte_recente).days + 1
+                dias_base_real = (corte_recente - data_min).days
+
+                if dias_base_real <= 0:
+                    return {"status": "periodo_curto", "dias_totais": dias_totais}
+
+                termos_recente = Counter(
+                    t for lista in recente["palavras_chave_lista"] for t in lista if t
+                )
+                termos_base = Counter(
+                    t for lista in base["palavras_chave_lista"] for t in lista if t
+                )
+
+                todos_termos = set(termos_recente) | set(termos_base)
+                registros = []
+
+                for termo in todos_termos:
+                    n_recente = termos_recente.get(termo, 0)
+                    n_base = termos_base.get(termo, 0)
+
+                    if (n_recente + n_base) < min_ocorrencias:
+                        continue
+
+                    taxa_recente = n_recente / dias_recente_real
+                    taxa_base = n_base / dias_base_real
+
+                    if taxa_recente <= taxa_base:
+                        continue  # só nos interessa quem está subindo de verdade
+
+                    variancia = (taxa_recente / dias_recente_real) + (taxa_base / dias_base_real)
+                    z_score = (taxa_recente - taxa_base) / math.sqrt(variancia) if variancia > 0 else 0.0
+
+                    if z_score < limiar_z:
+                        continue  # sinal fraco demais para distinguir de ruído de amostra
+
+                    eh_novo = n_base == 0
+                    variacao_pct = (
+                        ((taxa_recente - taxa_base) / taxa_base) * 100
+                        if taxa_base > 0 else None
+                    )
+
+                    registros.append({
+                        "Termo": termo,
+                        "Menções (janela recente)": n_recente,
+                        "Menções (linha de base)": n_base,
+                        "Taxa recente (m/dia)": round(taxa_recente, 2),
+                        "Taxa de base (m/dia)": round(taxa_base, 2),
+                        "Variação": "novo" if eh_novo else f"+{variacao_pct:.0f}%",
+                        "Força do sinal (z)": round(z_score, 2),
+                    })
+
+                if not registros:
+                    return {"status": "sem_ascensao"}
+
+                df_ascensao = pd.DataFrame(registros).sort_values(
+                    by="Força do sinal (z)",
+                    ascending=False
+                ).head(top_n_param)
+
+                return {
+                    "status": "ok",
+                    "tabela": df_ascensao,
+                    "dias_recente": dias_recente_real,
+                    "dias_base": dias_base_real,
+                    "corte_recente": corte_recente,
+                }
+
+            chave_cache_ascensao = (
+                len(df), df["date_dt"].min(), df["date_dt"].max(),
+                len(df_keywords), dias_janela_recente
+            )
+            resultado_ascensao = detectar_termos_ascensao(
+                chave_cache_ascensao, dias_janela_recente, top_n_ascensao, LIMIAR_Z
+            )
+
+            if resultado_ascensao["status"] == "sem_dados":
+                st.info(
+                    "Nenhuma matéria do período/busca filtrados possui palavras-chave "
+                    "extraídas ainda."
+                )
+            elif resultado_ascensao["status"] == "periodo_curto":
+                st.info(
+                    f"O período filtrado tem {resultado_ascensao['dias_totais']} dia(s), "
+                    f"curto demais para comparar com uma janela recente de "
+                    f"{dias_janela_recente} dias. Amplie o período filtrado na barra "
+                    "lateral ou reduza a janela recente."
+                )
+            elif resultado_ascensao["status"] == "sem_ascensao":
+                st.info(
+                    "Nenhum termo passou no teste de significância deste filtro — "
+                    "sem sinais de ascensão estatisticamente distinguíveis de ruído. "
+                    "Tente \"Mais permissivo\" na sensibilidade, ou amplie o período."
+                )
+            else:
+                tabela_ascensao = resultado_ascensao["tabela"]
+
+                chips_ascensao_html = "".join(
+                    '<span class="chip-nuvem {tom}">{termo} <b>({variacao})</b></span>'.format(
+                        tom="tom-b" if row["Variação"] == "novo" else "tom-a",
+                        termo=html.escape(str(row["Termo"])),
+                        variacao=html.escape(str(row["Variação"]))
+                    )
+                    for _, row in tabela_ascensao.iterrows()
+                )
+
+                st.markdown(
+                    f'<div class="nuvem-container">{chips_ascensao_html}</div>',
+                    unsafe_allow_html=True
+                )
+
+                st.caption(
+                    f"Janela recente: últimos {resultado_ascensao['dias_recente']} dia(s) "
+                    f"(desde {resultado_ascensao['corte_recente'].strftime('%d/%m/%Y')}) · "
+                    f"linha de base: os {resultado_ascensao['dias_base']} dia(s) anteriores "
+                    f"do período filtrado · limiar de significância: z ≥ {LIMIAR_Z:.2f} "
+                    f"({sensibilidade_ascensao.lower()}). \"novo\" = termo que não "
+                    "aparecia na linha de base."
+                )
+
+                with st.expander("Ver como tabela (inclui força do sinal)"):
+                    st.dataframe(
+                        tabela_ascensao.sort_values("Força do sinal (z)", ascending=False),
+                        use_container_width=True, hide_index=True
+                    )
+
+            st.divider()
+
+        else:
+            st.info(
+                "As palavras-chave por IA ainda não estão disponíveis para as matérias "
+                "deste dataset — essa análise é gerada em etapas de processamento "
+                "separadas do app."
+            )
+            st.divider()
+
+        st.subheader("Temas mais frequentes")
+
+        fonte_texto = st.radio(
+            "Analisar",
+            ["Títulos e textos", "Apenas títulos", "Apenas textos"],
+            horizontal=True
+        )
+
+        top_n = st.slider("Quantidade de termos", 10, 100, 30)
+
+        if fonte_texto == "Títulos e textos":
+            textos = tuple((df["Título"] + " " + df["Texto"]).tolist())
+        elif fonte_texto == "Apenas títulos":
+            textos = tuple(df["Título"].tolist())
+        else:
+            textos = tuple(df["Texto"].tolist())
+
+        col_palavras, col_bigramas, col_trigramas = st.columns(3)
+
+        with col_palavras:
+            st.markdown("### Palavras")
+            palavras = contar_termos(textos, n=1, top_n=top_n)
+            st.dataframe(palavras, use_container_width=True, hide_index=True)
+
+        with col_bigramas:
+            st.markdown("### Bigramas")
+            bigramas = contar_termos(textos, n=2, top_n=top_n)
+            st.dataframe(bigramas, use_container_width=True, hide_index=True)
+
+        with col_trigramas:
+            st.markdown("### Trigramas")
+            trigramas = contar_termos(textos, n=3, top_n=top_n)
+            st.dataframe(trigramas, use_container_width=True, hide_index=True)
+
+        st.divider()
+
+        st.subheader("Ranking visual de termos")
+
+        tipo_termo = st.selectbox(
+            "Tipo de termo",
+            ["Palavras", "Bigramas", "Trigramas"]
+        )
+
+        if tipo_termo == "Palavras":
+            termos_grafico = palavras
+        elif tipo_termo == "Bigramas":
+            termos_grafico = bigramas
+        else:
+            termos_grafico = trigramas
+
+        termos_grafico = termos_grafico.sort_values("Frequência", ascending=True)
+
+        fig_termos = px.bar(
+            termos_grafico,
+            x="Frequência",
+            y="Termo",
+            orientation="h",
+            title=f"{tipo_termo} mais frequentes",
+            text="Frequência"
+        )
+
+        st.plotly_chart(fig_termos, use_container_width=True)
+
+        st.divider()
+
+        st.subheader("Evolução de um termo")
+
         escala = st.radio(
             "Agrupar por",
             ["Dia", "Mês", "Ano"],
             index=1,
             horizontal=True,
-            key="escala_visao_geral"
+            key="escala_temas_termo"
         )
 
-    serie = agrupar_por_escala(df, escala)
-
-    fig = px.line(
-        serie,
-        x="Período",
-        y="Matérias",
-        markers=True,
-        title=f"Evolução por {escala.lower()}"
-    )
-
-    fig.update_layout(
-        xaxis_title="Período",
-        yaxis_title="Número de matérias",
-        xaxis_type="category"
-    )
-
-    fig.update_traces(
-        hovertemplate="<b>Período:</b> %{x}<br><b>Matérias:</b> %{y}<extra></extra>"
-    )
-
-    st.plotly_chart(fig, use_container_width=True)
-
-    st.divider()
-
-    st.subheader("Distribuição por editoria")
-
-    por_editoria = (
-        df.groupby("Editoria")
-        .size()
-        .reset_index(name="Matérias")
-        .sort_values("Matérias", ascending=True)
-    )
-
-    fig_editoria = px.bar(
-        por_editoria,
-        x="Matérias",
-        y="Editoria",
-        orientation="h",
-        title="Matérias por editoria",
-        text="Matérias"
-    )
-
-    st.plotly_chart(fig_editoria, use_container_width=True)
-
-    st.divider()
-
-    col_titulo_amostra, col_slider_amostra, col_botao_amostra = st.columns([3, 2, 1])
-    with col_titulo_amostra:
-        st.subheader("Amostra de matérias do período")
-    with col_slider_amostra:
-        tamanho_amostra = st.slider(
-            "Quantidade de matérias",
-            min_value=5, max_value=30, value=15,
-            key="tamanho_amostra_visao_geral"
-        )
-    with col_botao_amostra:
-        st.markdown("<br>", unsafe_allow_html=True)
-        sortear_amostra_novamente = st.button("Sortear outras", key="btn_sortear_amostra_visao_geral")
-
-    st.caption(
-        "Amostra aleatória do período/busca/veículo filtrados — não é um ranking "
-        "por nenhuma métrica. Clique em qualquer coluna da tabela para reordenar "
-        "como quiser."
-    )
-
-    chave_amostra_atual = (
-        len(df), df["date_dt"].min(), df["date_dt"].max(),
-        tuple(sorted(veiculos_selecionados)), busca, tamanho_amostra
-    )
-
-    precisa_sortear_amostra = (
-        sortear_amostra_novamente
-        or "amostra_visao_geral_chave" not in st.session_state
-        or st.session_state.get("amostra_visao_geral_chave") != chave_amostra_atual
-    )
-
-    if precisa_sortear_amostra:
-        n_amostra_visao_geral = min(tamanho_amostra, len(df))
-        st.session_state["amostra_visao_geral"] = (
-            df.sample(n=n_amostra_visao_geral) if n_amostra_visao_geral > 0 else df.iloc[0:0]
-        )
-        st.session_state["amostra_visao_geral_chave"] = chave_amostra_atual
-
-    tabela_amostra = st.session_state.get("amostra_visao_geral")
-
-    if tabela_amostra is None or tabela_amostra.empty:
-        st.caption("Nenhuma matéria disponível para amostragem com os filtros atuais.")
-    else:
-        tabela = tabela_amostra[["Data", "Título", "Editoria", "Autor", "Palavras", "URL"]].copy()
-
-        st.dataframe(
-            tabela,
-            use_container_width=True,
-            hide_index=True
+        termo_busca = st.text_input(
+            "Digite um termo para acompanhar ao longo do tempo",
+            value="vacina"
         )
 
-    st.divider()
+        if termo_busca:
+            termo = termo_busca.lower()
 
-
-if secao_selecionada == "Enquadramentos e temas":
-    mostrar_periodo_no_topo(periodo_label_sidebar)
-
-    st.markdown('<div class="painel-eyebrow">Enquadramentos e temas</div>', unsafe_allow_html=True)
-    with st.expander("Como ler esta seção (5 formas diferentes de medir o mesmo assunto)"):
-        st.markdown(
-            "Esta seção reúne 5 formas diferentes de responder \"do que a mídia "
-            "está falando\", cada uma com um método distinto — elas vão discordar "
-            "entre si às vezes, porque medem coisas diferentes.\n\n"
-            "- **Palavras-chave (IA)** captam *conceito* — a IA lê cada matéria e "
-            "extrai termos relevantes, descartando ruído.\n"
-            "- **Termos em ascensão** são as mesmas palavras-chave, mas testadas "
-            "estatisticamente para detectar o que está *acelerando*, não só o que "
-            "é mais frequente.\n"
-            "- **N-gramas** (palavras/bigramas/trigramas) captam *frequência "
-            "literal* de texto — mais bruto, sem julgamento de relevância, mas "
-            "não depende de IA.\n"
-            "- **Animações por mês** mostram qualquer uma das anteriores "
-            "evoluindo no tempo.\n"
-            "- **Enquadramentos e áreas** captam *categoria* — a IA classifica "
-            "cada matéria numa lista fixa de opções, em vez de extrair termos "
-            "livres."
-        )
-
-    st.markdown(
-        f"### Enquadramentos e áreas do período "
-        f"{icone_ajuda('Agregados a partir da classificação já feita por matéria, no período/veículo/busca selecionados na barra lateral — filtrar aqui não tem custo adicional de IA.')}",
-        unsafe_allow_html=True
-    )
-    renderizar_bloco_classificacao(df, "o período selecionado", dimensoes={"enquadramentos", "areas"})
-
-    st.divider()
-
-    if df_keywords is not None:
-        st.markdown(
-            f"### Palavras-chave identificadas por IA "
-            f"{icone_ajuda('Extraídas via modelo de linguagem a partir do conteúdo de cada matéria — tendem a ser mais específicas que a contagem bruta de palavras e n-gramas abaixo, já que descartam termos genéricos e mantêm conceitos, instituições, tecnologias e atores.')}",
-            unsafe_allow_html=True
-        )
-
-        urls_filtradas = set(df["URL"]) - {""}
-        kw_filtrado = df_keywords[df_keywords["url"].isin(urls_filtradas)]
-
-        if kw_filtrado.empty:
-            st.info(
-                "Nenhuma matéria do período/busca filtrados possui palavras-chave "
-                "extraídas ainda. Amplie os filtros na barra lateral, ou aguarde o "
-                "próximo processamento."
+            df_termo = df.copy()
+            df_termo["Ocorrências"] = (
+                (df_termo["Título"] + " " + df_termo["Texto"])
+                .str.lower()
+                .str.count(re.escape(termo))
             )
-        else:
-            todas_kw = [
-                termo
-                for lista in kw_filtrado["palavras_chave_lista"]
-                for termo in lista
-                if termo and str(termo).strip()
-            ]
 
-            if not todas_kw:
-                st.info("As matérias filtradas não possuem palavras-chave extraídas.")
+            df_termo = df_termo[df_termo["Ocorrências"] > 0]
+
+            if df_termo.empty:
+                st.warning("Nenhuma ocorrência encontrada para esse termo.")
             else:
-                contagem_kw = (
-                    pd.Series(Counter(todas_kw))
-                    .sort_values(ascending=False)
+                evolucao = agrupar_por_escala(df_termo, escala, coluna_valor="Ocorrências")
+
+                fig_evolucao = px.line(
+                    evolucao,
+                    x="Período",
+                    y="Ocorrências",
+                    markers=True,
+                    title=f"Evolução do termo: {termo_busca}"
                 )
 
-                top_n_kw = st.slider(
-                    "Quantidade de palavras-chave em destaque",
-                    min_value=10, max_value=60, value=25,
-                    key="top_n_kw"
+                fig_evolucao.update_layout(
+                    xaxis_title="Período",
+                    yaxis_title="Ocorrências",
+                    xaxis_type="category"
                 )
 
-                kw_top = contagem_kw.head(top_n_kw)
+                st.plotly_chart(fig_evolucao, use_container_width=True)
 
-                # Nuvem de chips: tamanho da fonte proporcional à frequência
-                freq_max = float(kw_top.max())
-                freq_min = float(kw_top.min())
+                st.markdown("### Matérias em que o termo aparece")
 
-                def _tamanho_chip(freq):
-                    if freq_max == freq_min:
-                        return 1.15
-                    return 0.85 + (freq - freq_min) / (freq_max - freq_min) * 1.25
+                tabela_termo = df_termo[
+                    ["Data", "Título", "Editoria", "Autor", "Ocorrências", "URL"]
+                ].copy()
 
-                chips_html = "".join(
-                    '<span class="chip-nuvem {tom}" style="font-size:{tam:.2f}rem;">{termo}</span>'.format(
-                        tom="tom-a" if i % 2 == 0 else "tom-b",
-                        tam=_tamanho_chip(freq),
-                        termo=html.escape(str(termo))
-                    )
-                    for i, (termo, freq) in enumerate(kw_top.items())
+                tabela_termo = tabela_termo.sort_values(
+                    "Ocorrências",
+                    ascending=False
                 )
 
-                st.markdown(
-                    f'<div class="nuvem-container">{chips_html}</div>',
-                    unsafe_allow_html=True
-                )
-
-                with st.expander("Ver como tabela e gráfico"):
-                    df_kw_top = kw_top.reset_index()
-                    df_kw_top.columns = ["Palavra-chave", "Frequência"]
-
-                    col_kw_tab, col_kw_graf = st.columns([1, 2])
-
-                    with col_kw_tab:
-                        st.dataframe(
-                            df_kw_top, use_container_width=True, hide_index=True
-                        )
-
-                    with col_kw_graf:
-                        fig_kw = px.bar(
-                            df_kw_top.sort_values("Frequência"),
-                            x="Frequência",
-                            y="Palavra-chave",
-                            orientation="h",
-                            title="Palavras-chave mais frequentes (IA)",
-                            text="Frequência"
-                        )
-                        st.plotly_chart(fig_kw, use_container_width=True)
-
-                st.caption(
-                    f"Cobertura: {numero_br(len(kw_filtrado))} de {numero_br(len(df))} "
-                    "matéria(s) no filtro atual possuem palavras-chave extraídas."
-                )
-
-        st.divider()
-
-        st.markdown(
-            f"### Termos em ascensão "
-            f"{icone_ajuda('Diferente do ranking acima (que mostra o que já está em alta), compara a taxa de menções de cada palavra-chave na janela mais recente do período com a taxa no restante — sinaliza temas acelerando mesmo sem volume alto. Usa um teste estatístico de significância (não percentual bruto), para não confundir ruído de amostra pequena (1 menção virar 2 = +100%, sem significar nada) com aumento genuíno.')}",
-            unsafe_allow_html=True
-        )
-
-        col_janela, col_topn, col_sensibilidade = st.columns(3)
-        with col_janela:
-            dias_janela_recente = st.slider(
-                "Janela recente (dias)",
-                min_value=7, max_value=30, value=14,
-                key="dias_janela_ascensao"
-            )
-        with col_topn:
-            top_n_ascensao = st.slider(
-                "Quantidade de termos em destaque",
-                min_value=5, max_value=20, value=10,
-                key="top_n_ascensao"
-            )
-        with col_sensibilidade:
-            sensibilidade_ascensao = st.select_slider(
-                "Sensibilidade do sinal",
-                options=["Alta confiança", "Confiança padrão", "Mais permissivo"],
-                value="Confiança padrão",
-                key="sensibilidade_ascensao"
-            )
-
-        LIMIAR_Z = {
-            "Alta confiança": 2.33,     # ~99% de confiança unicaudal
-            "Confiança padrão": 1.64,   # ~95% de confiança unicaudal
-            "Mais permissivo": 1.28,    # ~90% de confiança unicaudal
-        }[sensibilidade_ascensao]
-
-        @st.cache_data
-        def detectar_termos_ascensao(chave_cache, dias_recente_param, top_n_param, limiar_z, min_ocorrencias=3):
-            """Compara, para cada palavra-chave, a taxa de menções (por dia) na
-            janela recente do período filtrado com a taxa no restante do
-            período (linha de base), usando um teste de significância para
-            duas taxas de Poisson independentes (aproximação de Wald):
-
-                z = (taxa_recente - taxa_base) / sqrt(taxa_recente/dias_recente + taxa_base/dias_base)
-
-            Só termos com |z| acima do limiar escolhido (equivalente a um
-            nível de confiança) são sinalizados como 'em ascensão'. Isso
-            penaliza naturalmente contagens pequenas (que produzem z baixo,
-            mesmo com percentual de variação alto) e recompensa saltos
-            genuínos, mesmo quando o percentual parece modesto."""
-            kw_com_data = df.merge(
-                df_keywords[["url", "palavras_chave_lista"]],
-                left_on="URL", right_on="url", how="inner"
-            )
-
-            if kw_com_data.empty:
-                return {"status": "sem_dados"}
-
-            data_min = kw_com_data["date_dt"].min()
-            data_max = kw_com_data["date_dt"].max()
-            dias_totais = (data_max - data_min).days + 1
-
-            if dias_totais < dias_recente_param * 2:
-                return {"status": "periodo_curto", "dias_totais": dias_totais}
-
-            corte_recente = data_max - pd.Timedelta(days=dias_recente_param - 1)
-
-            recente = kw_com_data[kw_com_data["date_dt"] >= corte_recente]
-            base = kw_com_data[kw_com_data["date_dt"] < corte_recente]
-
-            dias_recente_real = (data_max - corte_recente).days + 1
-            dias_base_real = (corte_recente - data_min).days
-
-            if dias_base_real <= 0:
-                return {"status": "periodo_curto", "dias_totais": dias_totais}
-
-            termos_recente = Counter(
-                t for lista in recente["palavras_chave_lista"] for t in lista if t
-            )
-            termos_base = Counter(
-                t for lista in base["palavras_chave_lista"] for t in lista if t
-            )
-
-            todos_termos = set(termos_recente) | set(termos_base)
-            registros = []
-
-            for termo in todos_termos:
-                n_recente = termos_recente.get(termo, 0)
-                n_base = termos_base.get(termo, 0)
-
-                if (n_recente + n_base) < min_ocorrencias:
-                    continue
-
-                taxa_recente = n_recente / dias_recente_real
-                taxa_base = n_base / dias_base_real
-
-                if taxa_recente <= taxa_base:
-                    continue  # só nos interessa quem está subindo de verdade
-
-                variancia = (taxa_recente / dias_recente_real) + (taxa_base / dias_base_real)
-                z_score = (taxa_recente - taxa_base) / math.sqrt(variancia) if variancia > 0 else 0.0
-
-                if z_score < limiar_z:
-                    continue  # sinal fraco demais para distinguir de ruído de amostra
-
-                eh_novo = n_base == 0
-                variacao_pct = (
-                    ((taxa_recente - taxa_base) / taxa_base) * 100
-                    if taxa_base > 0 else None
-                )
-
-                registros.append({
-                    "Termo": termo,
-                    "Menções (janela recente)": n_recente,
-                    "Menções (linha de base)": n_base,
-                    "Taxa recente (m/dia)": round(taxa_recente, 2),
-                    "Taxa de base (m/dia)": round(taxa_base, 2),
-                    "Variação": "novo" if eh_novo else f"+{variacao_pct:.0f}%",
-                    "Força do sinal (z)": round(z_score, 2),
-                })
-
-            if not registros:
-                return {"status": "sem_ascensao"}
-
-            df_ascensao = pd.DataFrame(registros).sort_values(
-                by="Força do sinal (z)",
-                ascending=False
-            ).head(top_n_param)
-
-            return {
-                "status": "ok",
-                "tabela": df_ascensao,
-                "dias_recente": dias_recente_real,
-                "dias_base": dias_base_real,
-                "corte_recente": corte_recente,
-            }
-
-        chave_cache_ascensao = (
-            len(df), df["date_dt"].min(), df["date_dt"].max(),
-            len(df_keywords), dias_janela_recente
-        )
-        resultado_ascensao = detectar_termos_ascensao(
-            chave_cache_ascensao, dias_janela_recente, top_n_ascensao, LIMIAR_Z
-        )
-
-        if resultado_ascensao["status"] == "sem_dados":
-            st.info(
-                "Nenhuma matéria do período/busca filtrados possui palavras-chave "
-                "extraídas ainda."
-            )
-        elif resultado_ascensao["status"] == "periodo_curto":
-            st.info(
-                f"O período filtrado tem {resultado_ascensao['dias_totais']} dia(s), "
-                f"curto demais para comparar com uma janela recente de "
-                f"{dias_janela_recente} dias. Amplie o período filtrado na barra "
-                "lateral ou reduza a janela recente."
-            )
-        elif resultado_ascensao["status"] == "sem_ascensao":
-            st.info(
-                "Nenhum termo passou no teste de significância deste filtro — "
-                "sem sinais de ascensão estatisticamente distinguíveis de ruído. "
-                "Tente \"Mais permissivo\" na sensibilidade, ou amplie o período."
-            )
-        else:
-            tabela_ascensao = resultado_ascensao["tabela"]
-
-            chips_ascensao_html = "".join(
-                '<span class="chip-nuvem {tom}">{termo} <b>({variacao})</b></span>'.format(
-                    tom="tom-b" if row["Variação"] == "novo" else "tom-a",
-                    termo=html.escape(str(row["Termo"])),
-                    variacao=html.escape(str(row["Variação"]))
-                )
-                for _, row in tabela_ascensao.iterrows()
-            )
-
-            st.markdown(
-                f'<div class="nuvem-container">{chips_ascensao_html}</div>',
-                unsafe_allow_html=True
-            )
-
-            st.caption(
-                f"Janela recente: últimos {resultado_ascensao['dias_recente']} dia(s) "
-                f"(desde {resultado_ascensao['corte_recente'].strftime('%d/%m/%Y')}) · "
-                f"linha de base: os {resultado_ascensao['dias_base']} dia(s) anteriores "
-                f"do período filtrado · limiar de significância: z ≥ {LIMIAR_Z:.2f} "
-                f"({sensibilidade_ascensao.lower()}). \"novo\" = termo que não "
-                "aparecia na linha de base."
-            )
-
-            with st.expander("Ver como tabela (inclui força do sinal)"):
                 st.dataframe(
-                    tabela_ascensao.sort_values("Força do sinal (z)", ascending=False),
-                    use_container_width=True, hide_index=True
+                    tabela_termo,
+                    use_container_width=True,
+                    hide_index=True
                 )
 
         st.divider()
 
-    else:
-        st.info(
-            "As palavras-chave por IA ainda não estão disponíveis para as matérias "
-            "deste dataset — essa análise é gerada em etapas de processamento "
-            "separadas do app."
-        )
-        st.divider()
+        st.subheader("Top termos animado por mês")
 
-    st.subheader("Temas mais frequentes")
-
-    fonte_texto = st.radio(
-        "Analisar",
-        ["Títulos e textos", "Apenas títulos", "Apenas textos"],
-        horizontal=True
-    )
-
-    top_n = st.slider("Quantidade de termos", 10, 100, 30)
-
-    if fonte_texto == "Títulos e textos":
-        textos = tuple((df["Título"] + " " + df["Texto"]).tolist())
-    elif fonte_texto == "Apenas títulos":
-        textos = tuple(df["Título"].tolist())
-    else:
-        textos = tuple(df["Texto"].tolist())
-
-    col_palavras, col_bigramas, col_trigramas = st.columns(3)
-
-    with col_palavras:
-        st.markdown("### Palavras")
-        palavras = contar_termos(textos, n=1, top_n=top_n)
-        st.dataframe(palavras, use_container_width=True, hide_index=True)
-
-    with col_bigramas:
-        st.markdown("### Bigramas")
-        bigramas = contar_termos(textos, n=2, top_n=top_n)
-        st.dataframe(bigramas, use_container_width=True, hide_index=True)
-
-    with col_trigramas:
-        st.markdown("### Trigramas")
-        trigramas = contar_termos(textos, n=3, top_n=top_n)
-        st.dataframe(trigramas, use_container_width=True, hide_index=True)
-
-    st.divider()
-
-    st.subheader("Ranking visual de termos")
-
-    tipo_termo = st.selectbox(
-        "Tipo de termo",
-        ["Palavras", "Bigramas", "Trigramas"]
-    )
-
-    if tipo_termo == "Palavras":
-        termos_grafico = palavras
-    elif tipo_termo == "Bigramas":
-        termos_grafico = bigramas
-    else:
-        termos_grafico = trigramas
-
-    termos_grafico = termos_grafico.sort_values("Frequência", ascending=True)
-
-    fig_termos = px.bar(
-        termos_grafico,
-        x="Frequência",
-        y="Termo",
-        orientation="h",
-        title=f"{tipo_termo} mais frequentes",
-        text="Frequência"
-    )
-
-    st.plotly_chart(fig_termos, use_container_width=True)
-
-    st.divider()
-
-    st.subheader("Evolução de um termo")
-
-    escala = st.radio(
-        "Agrupar por",
-        ["Dia", "Mês", "Ano"],
-        index=1,
-        horizontal=True,
-        key="escala_temas_termo"
-    )
-
-    termo_busca = st.text_input(
-        "Digite um termo para acompanhar ao longo do tempo",
-        value="vacina"
-    )
-
-    if termo_busca:
-        termo = termo_busca.lower()
-
-        df_termo = df.copy()
-        df_termo["Ocorrências"] = (
-            (df_termo["Título"] + " " + df_termo["Texto"])
-            .str.lower()
-            .str.count(re.escape(termo))
+        tipo_animacao = st.selectbox(
+            "Tipo de termo na animação",
+            ["Palavras", "Bigramas", "Trigramas"],
+            key="tipo_animacao"
         )
 
-        df_termo = df_termo[df_termo["Ocorrências"] > 0]
-
-        if df_termo.empty:
-            st.warning("Nenhuma ocorrência encontrada para esse termo.")
-        else:
-            evolucao = agrupar_por_escala(df_termo, escala, coluna_valor="Ocorrências")
-
-            fig_evolucao = px.line(
-                evolucao,
-                x="Período",
-                y="Ocorrências",
-                markers=True,
-                title=f"Evolução do termo: {termo_busca}"
-            )
-
-            fig_evolucao.update_layout(
-                xaxis_title="Período",
-                yaxis_title="Ocorrências",
-                xaxis_type="category"
-            )
-
-            st.plotly_chart(fig_evolucao, use_container_width=True)
-
-            st.markdown("### Matérias em que o termo aparece")
-
-            tabela_termo = df_termo[
-                ["Data", "Título", "Editoria", "Autor", "Ocorrências", "URL"]
-            ].copy()
-
-            tabela_termo = tabela_termo.sort_values(
-                "Ocorrências",
-                ascending=False
-            )
-
-            st.dataframe(
-                tabela_termo,
-                use_container_width=True,
-                hide_index=True
-            )
-
-    st.divider()
-
-    st.subheader("Top termos animado por mês")
-
-    tipo_animacao = st.selectbox(
-        "Tipo de termo na animação",
-        ["Palavras", "Bigramas", "Trigramas"],
-        key="tipo_animacao"
-    )
-
-    top_animacao = st.slider(
-        "Quantidade de termos por mês",
-        5, 20, 10,
-        key="top_animacao"
-    )
-
-    if tipo_animacao == "Palavras":
-        n_animacao = 1
-    elif tipo_animacao == "Bigramas":
-        n_animacao = 2
-    else:
-        n_animacao = 3
-
-    @st.cache_data
-    def gerar_dados_animacao(df_hash_key, n_animacao, top_animacao):
-        """Cacheada por (período filtrado, tipo de n-grama, top_n).
-        df_hash_key é uma tupla derivada do df já filtrado, para servir
-        de chave de cache estável (DataFrames não são hashable)."""
-        registros = []
-
-        for mes, grupo in df.groupby("mes_dt"):
-            textos_mes = tuple(
-                (grupo["Título"].fillna("") + " " + grupo["Texto"].fillna("")).tolist()
-            )
-
-            termos_mes = contar_termos(
-                textos_mes,
-                n=n_animacao,
-                top_n=top_animacao
-            )
-
-            termos_mes["Mês"] = mes.strftime("%m/%Y")
-            termos_mes["mes_ordem"] = mes
-
-            registros.append(termos_mes)
-
-        return registros
-
-    # Chave simples para invalidar o cache quando o df filtrado mudar
-    chave_cache_animacao = (len(df), df["date_dt"].min(), df["date_dt"].max())
-    registros = gerar_dados_animacao(chave_cache_animacao, n_animacao, top_animacao)
-
-    if registros:
-        df_animado = pd.concat(registros, ignore_index=True)
-
-        df_animado = df_animado.sort_values(
-            ["mes_ordem", "Frequência"],
-            ascending=[True, True]
-        )
-
-        fig_animado = px.bar(
-            df_animado,
-            x="Frequência",
-            y="Termo",
-            orientation="h",
-            animation_frame="Mês",
-            range_x=[
-                0,
-                int(df_animado["Frequência"].max() * 1.15)
-            ],
-            title=f"Top {top_animacao} {tipo_animacao.lower()} por mês",
-            text="Frequência"
-        )
-
-        fig_animado.update_layout(
-            xaxis_title="Frequência",
-            yaxis_title="Termo",
-            yaxis={"categoryorder": "total ascending"},
-            height=650
-        )
-
-        fig_animado.update_traces(
-            textposition="outside",
-            hovertemplate=(
-                "<b>Termo:</b> %{y}<br>"
-                "<b>Frequência:</b> %{x}<extra></extra>"
-            )
-        )
-
-        st.plotly_chart(fig_animado, use_container_width=True)
-
-    else:
-        st.warning("Não há dados suficientes para gerar a animação.")
-
-    if df_keywords is not None:
-        st.divider()
-        st.markdown(
-            f"### Top palavras-chave animado por mês (IA) "
-            f"{icone_ajuda('Mesma ideia da animação acima, mas usando as palavras-chave extraídas por IA em vez de n-gramas — costuma mostrar uma evolução mais limpa dos temas, sem ruído de palavras genéricas.')}",
-            unsafe_allow_html=True
-        )
-
-        top_animacao_kw = st.slider(
-            "Quantidade de palavras-chave por mês",
+        top_animacao = st.slider(
+            "Quantidade de termos por mês",
             5, 20, 10,
-            key="top_animacao_kw"
+            key="top_animacao"
         )
+
+        if tipo_animacao == "Palavras":
+            n_animacao = 1
+        elif tipo_animacao == "Bigramas":
+            n_animacao = 2
+        else:
+            n_animacao = 3
 
         @st.cache_data
-        def gerar_dados_animacao_keywords(chave_cache, top_n):
-            """Casa as palavras-chave (via URL) com as matérias já filtradas
-            e conta ocorrências por mês. chave_cache invalida o cache quando
-            o df filtrado ou o materias_keywords.csv mudarem."""
-            kw_com_data = df.merge(
-                df_keywords[["url", "palavras_chave_lista"]],
-                left_on="URL", right_on="url", how="inner"
-            )
-
+        def gerar_dados_animacao(df_hash_key, n_animacao, top_animacao):
+            """Cacheada por (período filtrado, tipo de n-grama, top_n).
+            df_hash_key é uma tupla derivada do df já filtrado, para servir
+            de chave de cache estável (DataFrames não são hashable)."""
             registros = []
-            for mes, grupo in kw_com_data.groupby("mes_dt"):
-                termos_mes = [
-                    termo
-                    for lista in grupo["palavras_chave_lista"]
-                    for termo in lista
-                    if termo and str(termo).strip()
-                ]
-                if not termos_mes:
-                    continue
 
-                contagem_mes = (
-                    pd.Series(Counter(termos_mes))
-                    .sort_values(ascending=False)
-                    .head(top_n)
+            for mes, grupo in df.groupby("mes_dt"):
+                textos_mes = tuple(
+                    (grupo["Título"].fillna("") + " " + grupo["Texto"].fillna("")).tolist()
                 )
-                df_mes = contagem_mes.reset_index()
-                df_mes.columns = ["Termo", "Frequência"]
-                df_mes["Mês"] = mes.strftime("%m/%Y")
-                df_mes["mes_ordem"] = mes
 
-                registros.append(df_mes)
+                termos_mes = contar_termos(
+                    textos_mes,
+                    n=n_animacao,
+                    top_n=top_animacao
+                )
+
+                termos_mes["Mês"] = mes.strftime("%m/%Y")
+                termos_mes["mes_ordem"] = mes
+
+                registros.append(termos_mes)
 
             return registros
 
-        chave_cache_kw_animado = (
-            len(df), df["date_dt"].min(), df["date_dt"].max(), len(df_keywords)
-        )
-        registros_kw = gerar_dados_animacao_keywords(
-            chave_cache_kw_animado, top_animacao_kw
-        )
+        # Chave simples para invalidar o cache quando o df filtrado mudar
+        chave_cache_animacao = (len(df), df["date_dt"].min(), df["date_dt"].max())
+        registros = gerar_dados_animacao(chave_cache_animacao, n_animacao, top_animacao)
 
-        if registros_kw:
-            df_animado_kw = pd.concat(registros_kw, ignore_index=True)
-            df_animado_kw = df_animado_kw.sort_values(
+        if registros:
+            df_animado = pd.concat(registros, ignore_index=True)
+
+            df_animado = df_animado.sort_values(
                 ["mes_ordem", "Frequência"],
                 ascending=[True, True]
             )
 
-            fig_animado_kw = px.bar(
-                df_animado_kw,
+            fig_animado = px.bar(
+                df_animado,
                 x="Frequência",
                 y="Termo",
                 orientation="h",
                 animation_frame="Mês",
                 range_x=[
                     0,
-                    int(df_animado_kw["Frequência"].max() * 1.15)
+                    int(df_animado["Frequência"].max() * 1.15)
                 ],
-                title=f"Top {top_animacao_kw} palavras-chave (IA) por mês",
-                text="Frequência",
-                color_discrete_sequence=["#5FBFA0"]
+                title=f"Top {top_animacao} {tipo_animacao.lower()} por mês",
+                text="Frequência"
             )
 
-            fig_animado_kw.update_layout(
+            fig_animado.update_layout(
                 xaxis_title="Frequência",
-                yaxis_title="Palavra-chave",
+                yaxis_title="Termo",
                 yaxis={"categoryorder": "total ascending"},
                 height=650
             )
 
-            fig_animado_kw.update_traces(
+            fig_animado.update_traces(
                 textposition="outside",
                 hovertemplate=(
-                    "<b>Palavra-chave:</b> %{y}<br>"
+                    "<b>Termo:</b> %{y}<br>"
                     "<b>Frequência:</b> %{x}<extra></extra>"
                 )
             )
 
-            st.plotly_chart(fig_animado_kw, use_container_width=True)
+            st.plotly_chart(fig_animado, use_container_width=True)
+
         else:
-            st.info(
-                "Nenhuma matéria do período filtrado possui palavras-chave "
-                "extraídas com dados de mês suficientes para animar."
+            st.warning("Não há dados suficientes para gerar a animação.")
+
+        if df_keywords is not None:
+            st.divider()
+            st.markdown(
+                f"### Top palavras-chave animado por mês (IA) "
+                f"{icone_ajuda('Mesma ideia da animação acima, mas usando as palavras-chave extraídas por IA em vez de n-gramas — costuma mostrar uma evolução mais limpa dos temas, sem ruído de palavras genéricas.')}",
+                unsafe_allow_html=True
             )
 
-    st.divider()
+            top_animacao_kw = st.slider(
+                "Quantidade de palavras-chave por mês",
+                5, 20, 10,
+                key="top_animacao_kw"
+            )
 
-    st.markdown(
-        f"### Tendência do período "
-        f"{icone_ajuda('Texto corrido, gerado por dia×veículo — não dá para agregar por contagem como os outros campos. A síntese abaixo usa 1 chamada de IA sob demanda, aproveitando só as frases diárias já existentes.')}",
-        unsafe_allow_html=True
-    )
+            @st.cache_data
+            def gerar_dados_animacao_keywords(chave_cache, top_n):
+                """Casa as palavras-chave (via URL) com as matérias já filtradas
+                e conta ocorrências por mês. chave_cache invalida o cache quando
+                o df filtrado ou o materias_keywords.csv mudarem."""
+                kw_com_data = df.merge(
+                    df_keywords[["url", "palavras_chave_lista"]],
+                    left_on="URL", right_on="url", how="inner"
+                )
 
-    datas_no_filtro = set(df["Data"].unique())
-    resultado_tendencia_periodo = agregar_analises_periodo(
-        analises_diarias, datas_no_filtro, veiculos_no_filtro=veiculos_selecionados
-    )
+                registros = []
+                for mes, grupo in kw_com_data.groupby("mes_dt"):
+                    termos_mes = [
+                        termo
+                        for lista in grupo["palavras_chave_lista"]
+                        for termo in lista
+                        if termo and str(termo).strip()
+                    ]
+                    if not termos_mes:
+                        continue
 
-    if not resultado_tendencia_periodo:
-        st.info(
-            "Nenhuma tendência disponível ainda para os dias/veículos deste período."
-        )
-    else:
-        chave_periodo = tuple(resultado_tendencia_periodo["tendencias_diarias"])
-
-        if st.button("Gerar síntese do período", key="btn_sintese_periodo"):
-            with st.spinner("Sintetizando tendência do período..."):
-                try:
-                    texto_sintese = sintetizar_tendencia_periodo(
-                        resultado_tendencia_periodo["tendencias_diarias"]
+                    contagem_mes = (
+                        pd.Series(Counter(termos_mes))
+                        .sort_values(ascending=False)
+                        .head(top_n)
                     )
-                    st.session_state["sintese_periodo_texto"] = texto_sintese
-                    st.session_state["sintese_periodo_chave"] = chave_periodo
-                except Exception as e:
-                    st.error(f"Não foi possível gerar a síntese: {e}")
+                    df_mes = contagem_mes.reset_index()
+                    df_mes.columns = ["Termo", "Frequência"]
+                    df_mes["Mês"] = mes.strftime("%m/%Y")
+                    df_mes["mes_ordem"] = mes
 
-        sintese_valida = (
-            st.session_state.get("sintese_periodo_chave") == chave_periodo
-            and st.session_state.get("sintese_periodo_texto")
-        )
+                    registros.append(df_mes)
 
-        if sintese_valida:
-            st.info(st.session_state["sintese_periodo_texto"])
-        else:
-            with st.expander("Ver frases diárias sem sintetizar"):
-                for data_item, veiculo_item, texto_item in resultado_tendencia_periodo["tendencias_diarias"]:
-                    st.write(f"**{data_item}** ({veiculo_item}) — {texto_item}")
+                return registros
 
+            chave_cache_kw_animado = (
+                len(df), df["date_dt"].min(), df["date_dt"].max(), len(df_keywords)
+            )
+            registros_kw = gerar_dados_animacao_keywords(
+                chave_cache_kw_animado, top_animacao_kw
+            )
 
-def renderizar_secao_sismografo(
-    prefixo_chave,
-    df_sismografo=None,
-    escala_sismografo=None,
-    mostrar_slider=True,
-    n_eventos_fixo=6,
-    mostrar_gauge_ritmo=True,
-    texto_ajuda=None,
-    mostrar_instrucoes=True,
-):
-    """Renderiza o widget do sismógrafo (detecção de picos de publicação +
-    boletim animado) e, opcionalmente, o gauge de ritmo do período.
+            if registros_kw:
+                df_animado_kw = pd.concat(registros_kw, ignore_index=True)
+                df_animado_kw = df_animado_kw.sort_values(
+                    ["mes_ordem", "Frequência"],
+                    ascending=[True, True]
+                )
 
-    Reutilizado por duas chamadas bem diferentes:
-    - seção "Sismógrafo" (exploração histórica completa): usa o df e a
-      escala vigentes na sidebar, slider de quantidade de picos, e mostra o
-      gauge de ritmo do período filtrado.
-    - "Cobertura do dia" (visão geral compacta): recebe df_sismografo já
-      restrito a uma janela fixa recente (últimos 30 dias, independente do
-      filtro de período da sidebar), escala fixa em "Dia", sem slider (um
-      número fixo de picos) e sem o gauge — que apareceria duplicado ali
-      (Parte 1 já mostra "Ritmo de publicação (hoje)").
+                fig_animado_kw = px.bar(
+                    df_animado_kw,
+                    x="Frequência",
+                    y="Termo",
+                    orientation="h",
+                    animation_frame="Mês",
+                    range_x=[
+                        0,
+                        int(df_animado_kw["Frequência"].max() * 1.15)
+                    ],
+                    title=f"Top {top_animacao_kw} palavras-chave (IA) por mês",
+                    text="Frequência",
+                    color_discrete_sequence=["#5FBFA0"]
+                )
 
-    df_sismografo/escala_sismografo caem para o df/escala globais da
-    sidebar quando não informados (comportamento da chamada histórica).
-    prefixo_chave evita colisão de key entre os dois widgets de slider."""
-    df_sismografo = df if df_sismografo is None else df_sismografo
-    escala_sismografo = escala if escala_sismografo is None else escala_sismografo
+                fig_animado_kw.update_layout(
+                    xaxis_title="Frequência",
+                    yaxis_title="Palavra-chave",
+                    yaxis={"categoryorder": "total ascending"},
+                    height=650
+                )
 
-    if texto_ajuda is None:
-        texto_ajuda = (
-            "Detecta automaticamente os picos de publicação no período em questão "
-            "e transforma cada um em um boletim — a matéria mais representativa daquele momento."
-        )
+                fig_animado_kw.update_traces(
+                    textposition="outside",
+                    hovertemplate=(
+                        "<b>Palavra-chave:</b> %{y}<br>"
+                        "<b>Frequência:</b> %{x}<extra></extra>"
+                    )
+                )
 
-    st.markdown(
-        f"### Sismógrafo de cobertura {icone_ajuda(texto_ajuda)}",
-        unsafe_allow_html=True
-    )
-
-    if mostrar_slider:
-        n_eventos = st.slider(
-            "Quantidade de picos a destacar",
-            min_value=4, max_value=15, value=8,
-            key=f"n_eventos_sismografo_{prefixo_chave}"
-        )
-    else:
-        n_eventos = n_eventos_fixo
-
-    MAPA_COL_ESCALA = {"Dia": "date_dt", "Mês": "mes_dt", "Ano": "ano_dt"}
-
-    @st.cache_data
-    def detectar_eventos_destaque(chave_cache, _df_evt, escala_evt, n_eventos_evt):
-        """Identifica picos estatísticos de cobertura (contagem acima de
-        média + 1 desvio-padrão) e extrai, para cada pico, a matéria mais
-        longa publicada naquele período como 'manchete' representativa.
-
-        chave_cache serve apenas para invalidar o cache quando o df
-        filtrado mudar (DataFrames não são hashable — por isso _df_evt leva
-        underscore, pra o Streamlit não tentar fazer hash dele direto)."""
-        serie = agrupar_por_escala(_df_evt, escala_evt)
-
-        if len(serie) < 2:
-            return []
-
-        media = serie["Matérias"].mean()
-        desvio = serie["Matérias"].std()
-        limiar = media + desvio if desvio and desvio > 0 else media
-
-        candidatos = serie[serie["Matérias"] >= limiar].copy()
-        if len(candidatos) < 2:
-            candidatos = serie.copy()
-
-        candidatos = candidatos.nlargest(
-            min(n_eventos_evt, len(candidatos)), "Matérias"
-        )
-
-        col_dt = MAPA_COL_ESCALA[escala_evt]
-        eventos = []
-
-        for _, linha in candidatos.iterrows():
-            periodo_dt = linha[col_dt]
-
-            if escala_evt == "Dia":
-                inicio_p = periodo_dt
-                fim_p = periodo_dt + pd.Timedelta(days=1)
-                rotulo = periodo_dt.strftime("%d/%m/%Y")
-            elif escala_evt == "Mês":
-                inicio_p = periodo_dt
-                fim_p = periodo_dt + pd.offsets.MonthBegin(1)
-                rotulo = periodo_dt.strftime("%m/%Y")
+                st.plotly_chart(fig_animado_kw, use_container_width=True)
             else:
-                inicio_p = periodo_dt
-                fim_p = periodo_dt + pd.offsets.YearBegin(1)
-                rotulo = periodo_dt.strftime("%Y")
+                st.info(
+                    "Nenhuma matéria do período filtrado possui palavras-chave "
+                    "extraídas com dados de mês suficientes para animar."
+                )
 
-            grupo = _df_evt[(_df_evt[col_dt] >= inicio_p) & (_df_evt[col_dt] < fim_p)]
-            if grupo.empty:
-                continue
+        st.divider()
 
-            principal = grupo.loc[grupo["Palavras"].idxmax()]
-
-            texto = str(principal["Texto"]).strip()
-            resumo = texto[:220] + ("…" if len(texto) > 220 else "")
-
-            url = str(principal["URL"]) if str(principal["URL"]).startswith("http") else ""
-
-            eventos.append({
-                "data": rotulo,
-                "data_ordenacao": periodo_dt.isoformat(),
-                "titulo": principal["Título"] or "(sem título)",
-                "editoria": principal["Editoria"] or "—",
-                "autor": principal["Autor"] or "Redação",
-                "url": url,
-                "resumo": resumo if resumo.strip() else "Resumo indisponível para esta matéria.",
-                "intensidade": int(linha["Matérias"]),
-            })
-
-        eventos.sort(key=lambda e: e["data_ordenacao"])
-        return eventos
-
-    chave_cache_sismografo = (
-        len(df_sismografo), df_sismografo["date_dt"].min(), df_sismografo["date_dt"].max()
-    )
-    eventos_destaque = detectar_eventos_destaque(
-        chave_cache_sismografo, df_sismografo, escala_sismografo, n_eventos
-    )
-
-    if len(eventos_destaque) < 2:
-        st.info(
-            "Dados insuficientes no período filtrado para montar o sismógrafo. "
-            "Tente ampliar o intervalo de datas na barra lateral."
-        )
-    else:
-        eventos_json = json.dumps(eventos_destaque, ensure_ascii=False)
-
-        SISMOGRAFO_HTML = """
-<style>
-  #sismografo-root {
-    --ink: __INK__;
-    --ink-2: __INK2__;
-    --paper: __PAPER__;
-    --muted: #92998F;
-    --grid: #303632;
-    --teal: #5FBFA0;
-    --amber: #E8A33D;
-    --fonte-serif: Georgia, 'Iowan Old Style', 'Palatino Linotype', 'Times New Roman', serif;
-    --fonte-mono: 'SF Mono', 'Cascadia Code', Consolas, 'Liberation Mono', Menlo, monospace;
-    --fonte-sans: -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-    background: var(--ink);
-    border-radius: 18px;
-    padding: 28px 26px 22px;
-    font-family: var(--fonte-sans);
-    color: var(--paper);
-    position: relative;
-    overflow: hidden;
-  }
-  #sismografo-root .rotulo-topo {
-    font-family: var(--fonte-mono);
-    font-size: 0.72rem;
-    letter-spacing: 0.14em;
-    color: var(--teal);
-    text-transform: uppercase;
-    margin-bottom: 26px;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-  #sismografo-root .rotulo-topo::before {
-    content: "";
-    width: 7px; height: 7px;
-    border-radius: 50%;
-    background: var(--amber);
-    box-shadow: 0 0 8px var(--amber);
-    animation: piscar 1.6s ease-in-out infinite;
-  }
-  @keyframes piscar { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }
-
-  #waveform-track {
-    position: relative;
-    height: 210px;
-    margin: 0 6px 8px;
-    border-bottom: 2px solid var(--grid);
-  }
-  #waveform-track::before {
-    content: "";
-    position: absolute;
-    left: 0; right: 0; top: 0; bottom: 0;
-    background-image: repeating-linear-gradient(to top, transparent, transparent 34px, var(--grid) 35px);
-    opacity: 0.35;
-    pointer-events: none;
-  }
-  .scan-line {
-    position: absolute;
-    top: 0; bottom: 8px;
-    width: 2px;
-    background: linear-gradient(to bottom, transparent, var(--amber) 20%, var(--amber) 80%, transparent);
-    box-shadow: 0 0 14px var(--amber);
-    left: 0;
-    animation: varrer 1.9s cubic-bezier(.4,0,.2,1) forwards;
-    z-index: 3;
-  }
-  @keyframes varrer { from { left: 0%; } to { left: 100%; } }
-
-  .pulso {
-    position: absolute;
-    bottom: 0;
-    width: 5px;
-    height: var(--altura, 20%);
-    background: linear-gradient(to top, var(--teal), rgba(95,191,160,0.05));
-    border-radius: 3px 3px 0 0;
-    transform: scaleY(0);
-    transform-origin: bottom;
-    opacity: 0;
-    transition: opacity 0.5s ease, filter 0.3s ease;
-    cursor: pointer;
-  }
-  .pulso.alerta { background: linear-gradient(to top, var(--amber), rgba(232,163,61,0.05)); }
-  .pulso.visivel { opacity: 1; animation: subir 0.55s ease-out forwards; }
-  @keyframes subir { to { transform: scaleY(1); } }
-  .pulso.selecionado { filter: drop-shadow(0 0 10px var(--teal)); }
-  .pulso.alerta.selecionado { filter: drop-shadow(0 0 10px var(--amber)); }
-  .pulso:hover { filter: brightness(1.3); }
-
-  .marcador {
-    position: absolute;
-    top: -7px; left: 50%;
-    transform: translateX(-50%);
-    width: 12px; height: 12px;
-    border-radius: 50%;
-    background: var(--ink);
-    border: 2px solid var(--teal);
-    transition: transform 0.2s ease;
-  }
-  .pulso.alerta .marcador { border-color: var(--amber); }
-  .pulso:hover .marcador { transform: translateX(-50%) scale(1.35); }
-
-  .rotulo-data {
-    position: absolute;
-    bottom: -24px; left: 50%;
-    transform: translateX(-50%) rotate(-38deg);
-    transform-origin: top left;
-    font-family: var(--fonte-mono);
-    font-size: 0.68rem;
-    color: var(--muted);
-    white-space: nowrap;
-  }
-
-  #boletim {
-    margin-top: 46px;
-    background: var(--ink-2);
-    border: 1px solid var(--grid);
-    border-left: 3px solid var(--amber);
-    border-radius: 10px;
-    padding: 20px 24px;
-    transition: opacity 0.3s ease;
-  }
-  #boletim.oculto { opacity: 0; }
-  #bt-cabecalho {
-    font-family: var(--fonte-mono);
-    font-size: 0.72rem;
-    letter-spacing: 0.08em;
-    color: var(--amber);
-    margin-bottom: 12px;
-  }
-  #bt-titulo {
-    font-family: var(--fonte-serif);
-    font-weight: 700;
-    font-size: 1.5rem;
-    line-height: 1.3;
-    color: var(--paper);
-    min-height: 1.3em;
-    border-right: 2px solid transparent;
-  }
-  #bt-autor {
-    font-family: var(--fonte-sans);
-    font-size: 0.85rem;
-    color: var(--muted);
-    margin: 8px 0 14px;
-    font-style: italic;
-  }
-  #bt-resumo {
-    font-family: var(--fonte-sans);
-    font-size: 0.95rem;
-    line-height: 1.55;
-    color: #C7C2B4;
-  }
-  #bt-link {
-    display: inline-block;
-    margin-top: 16px;
-    font-family: var(--fonte-mono);
-    font-size: 0.78rem;
-    letter-spacing: 0.05em;
-    color: var(--teal);
-    text-decoration: none;
-    border: 1px solid var(--teal);
-    border-radius: 999px;
-    padding: 7px 16px;
-    transition: background 0.2s ease, color 0.2s ease;
-  }
-  #bt-link:hover { background: var(--teal); color: var(--ink); }
-  #bt-link.escondido { display: none; }
-</style>
-
-<div id="sismografo-root">
-  <div class="rotulo-topo">Leitura em tempo real — intensidade de cobertura</div>
-  <div id="waveform-track">
-    <div class="scan-line"></div>
-  </div>
-  <div id="boletim" class="oculto">
-    <div id="bt-cabecalho">BOLETIM</div>
-    <div id="bt-titulo"></div>
-    <div id="bt-autor"></div>
-    <div id="bt-resumo"></div>
-    <a id="bt-link" href="#" target="_blank" rel="noopener">Ler matéria completa →</a>
-  </div>
-</div>
-
-<script>
-(function() {
-  const eventos = __EVENTOS_JSON__;
-  const track = document.getElementById('waveform-track');
-  const maxIntensidade = Math.max(...eventos.map(e => e.intensidade));
-  const minDate = new Date(eventos[0].data_ordenacao).getTime();
-  const maxDate = new Date(eventos[eventos.length - 1].data_ordenacao).getTime();
-  const spanDate = Math.max(maxDate - minDate, 1);
-
-  eventos.forEach((ev, i) => {
-    const t = new Date(ev.data_ordenacao).getTime();
-    const xPct = spanDate > 0 ? ((t - minDate) / spanDate) * 92 + 4 : 50;
-    const alturaPct = Math.max((ev.intensidade / maxIntensidade) * 85, 18);
-
-    const pulso = document.createElement('div');
-    pulso.className = 'pulso' + (ev.intensidade === maxIntensidade ? ' alerta' : '');
-    pulso.style.left = xPct + '%';
-    pulso.style.setProperty('--altura', alturaPct + '%');
-    pulso.style.transitionDelay = (i * 70) + 'ms';
-    pulso.dataset.index = i;
-
-    const marcador = document.createElement('div');
-    marcador.className = 'marcador';
-    marcador.title = ev.data + ' — ' + ev.titulo + ' (' + ev.intensidade + ' matéria(s))';
-    pulso.appendChild(marcador);
-
-    const rotulo = document.createElement('div');
-    rotulo.className = 'rotulo-data';
-    rotulo.textContent = ev.data;
-    pulso.appendChild(rotulo);
-
-    pulso.addEventListener('click', function() { mostrarBoletim(i); });
-    track.appendChild(pulso);
-  });
-
-  setTimeout(function() {
-    document.querySelectorAll('.pulso').forEach(function(p) { p.classList.add('visivel'); });
-  }, 350);
-
-  function mostrarBoletim(i) {
-    const ev = eventos[i];
-    document.querySelectorAll('.pulso').forEach(function(p) { p.classList.remove('selecionado'); });
-    const alvo = document.querySelector('.pulso[data-index="' + i + '"]');
-    if (alvo) alvo.classList.add('selecionado');
-
-    const boletim = document.getElementById('boletim');
-    boletim.classList.remove('oculto');
-
-    document.getElementById('bt-cabecalho').textContent =
-      'BOLETIM ▸ ' + ev.data + ' ▸ ' + String(ev.editoria).toUpperCase() + ' ▸ ' + ev.intensidade + ' MATÉRIA(S) NO PERÍODO';
-    document.getElementById('bt-autor').textContent = 'Por ' + ev.autor;
-    document.getElementById('bt-resumo').textContent = ev.resumo;
-
-    const link = document.getElementById('bt-link');
-    if (ev.url) {
-      link.href = ev.url;
-      link.classList.remove('escondido');
-    } else {
-      link.classList.add('escondido');
-    }
-
-    const tituloEl = document.getElementById('bt-titulo');
-    tituloEl.textContent = '';
-    let idx = 0;
-    if (window.__sismografoTyper) clearInterval(window.__sismografoTyper);
-    window.__sismografoTyper = setInterval(function() {
-      tituloEl.textContent += ev.titulo[idx] || '';
-      idx++;
-      if (idx >= ev.titulo.length) clearInterval(window.__sismografoTyper);
-    }, 16);
-  }
-
-  setTimeout(function() { mostrarBoletim(eventos.length - 1); }, 2100);
-})();
-</script>
-"""
-
-        cores = obter_cores_tema()
-        SISMOGRAFO_HTML = (
-            SISMOGRAFO_HTML
-            .replace("__EVENTOS_JSON__", eventos_json)
-            .replace("__INK__", cores["ink"])
-            .replace("__INK2__", cores["ink2"])
-            .replace("__PAPER__", cores["paper"])
+        st.markdown(
+            f"### Tendência do período "
+            f"{icone_ajuda('Texto corrido, gerado por dia×veículo — não dá para agregar por contagem como os outros campos. A síntese abaixo usa 1 chamada de IA sob demanda, aproveitando só as frases diárias já existentes.')}",
+            unsafe_allow_html=True
         )
 
-        components.html(SISMOGRAFO_HTML, height=560, scrolling=False)
-
-        if mostrar_instrucoes:
-            st.caption(
-                "Clique em qualquer marcador da linha para ver o boletim daquele pico de cobertura. "
-                "Barras em âmbar indicam o maior pico do período filtrado."
-            )
-
-    if mostrar_gauge_ritmo:
-        renderizar_gauge_ritmo(
-            "Ritmo de publicação (período selecionado)",
-            "Período filtrado",
-            ritmo_atual, ritmo_historico, razao_temperatura
+        datas_no_filtro = set(df["Data"].unique())
+        resultado_tendencia_periodo = agregar_analises_periodo(
+            analises_diarias, datas_no_filtro, veiculos_no_filtro=veiculos_selecionados
         )
 
-
-if secao_selecionada == "Atores":
-    mostrar_periodo_no_topo(periodo_label_sidebar)
-    st.markdown('<div class="painel-eyebrow">Atores</div>', unsafe_allow_html=True)
-    st.markdown(
-        f"### Instituições, pessoas e abrangência do período "
-        f"{icone_ajuda('Agregados a partir da classificação já feita por matéria, no período/veículo/busca selecionados na barra lateral — filtrar aqui não tem custo adicional de IA.')}",
-        unsafe_allow_html=True
-    )
-    renderizar_bloco_classificacao(
-        df, "o período selecionado",
-        dimensoes={"instituicoes", "pessoas", "abrangencia"}
-    )
-
-
-if secao_selecionada == "Sismógrafo":
-    mostrar_periodo_no_topo(periodo_label_sidebar)
-    escala = st.radio(
-        "Agrupar sismógrafo por",
-        ["Dia", "Mês", "Ano"],
-        index=1,
-        horizontal=True,
-        key="escala_sismografo"
-    )
-    renderizar_secao_sismografo("sismografo", escala_sismografo=escala)
-
-
-if secao_selecionada == "Cobertura do dia":
-    st.markdown('<div class="painel-eyebrow">Cobertura do dia</div>', unsafe_allow_html=True)
-
-    # =========================
-    # Parte 1: pulso de hoje — compacto, sempre o dia mais recente do
-    # dataset, independente do período selecionado na barra lateral.
-    # =========================
-    st.markdown(f"#### Hoje — {data_mais_recente_str}")
-    st.caption(
-        f"{numero_br(n_materias_hoje)} matéria(s) publicadas em {data_mais_recente_str} "
-        f"({nome_dia_semana_hoje}, todos os veículos)."
-    )
-
-    renderizar_gauge_ritmo(
-        "Ritmo de publicação (hoje)",
-        f"Hoje ({nome_dia_semana_hoje})",
-        n_materias_hoje, ritmo_historico_dia_semana_hoje, razao_dia,
-        rotulo_historico=f"Histórico de {nome_dia_semana_hoje}s"
-    )
-
-    if resultado_tendencia_hoje:
-        tendencias_hoje = resultado_tendencia_hoje["tendencias_diarias"]
-
-        if len(tendencias_hoje) == 1:
-            _, _, texto_tendencia = tendencias_hoje[0]
-            st.markdown(
-                f"""
-                <div class="insight-box">
-                    <div class="insight-title">Tendência do dia</div>
-                    {html.escape(texto_tendencia)}
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
-        elif len(tendencias_hoje) > 1:
-            linhas_tendencia_html = "".join(
-                f'<p style="margin:0 0 10px 0;"><b>{html.escape(veiculo)}:</b> {html.escape(texto)}</p>'
-                for _, veiculo, texto in tendencias_hoje
-            )
-            st.markdown(
-                f"""
-                <div class="insight-box">
-                    <div class="insight-title">Tendência do dia (por veículo)</div>
-                    {linhas_tendencia_html}
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
-    else:
-        st.caption(
-            "Tendência do dia ainda não disponível para este dia/veículo."
-        )
-
-    col_titulo_sorteio, col_botao_sorteio = st.columns([4, 1])
-    with col_botao_sorteio:
-        sortear_novamente = st.button("Sortear outras", key="btn_sortear_materias")
-
-    df_dia_completo = df_hoje_filtrado
-
-    # Chave de cache inclui a seleção de veículos, não só a data — sem
-    # isso, trocar o filtro de veículo não invalidava o sorteio, e podia
-    # continuar mostrando matérias de fora do filtro atual (ou travado em
-    # menos matérias do que realmente havia disponível para o novo filtro).
-    chave_sorteio_atual = (data_mais_recente_str, tuple(sorted(veiculos_selecionados)))
-
-    precisa_sortear = (
-        sortear_novamente
-        or "materias_aleatorias_chave" not in st.session_state
-        or st.session_state.get("materias_aleatorias_chave") != chave_sorteio_atual
-    )
-
-    if precisa_sortear:
-        n_amostra = min(3, len(df_dia_completo))
-        st.session_state["materias_aleatorias"] = (
-            df_dia_completo.sample(n=n_amostra) if n_amostra > 0 else df_dia_completo
-        )
-        st.session_state["materias_aleatorias_chave"] = chave_sorteio_atual
-
-    materias_amostra = st.session_state.get("materias_aleatorias")
-    n_mostradas = 0 if materias_amostra is None else len(materias_amostra)
-
-    with col_titulo_sorteio:
-        if n_mostradas == 3:
-            st.markdown("##### Três matérias do dia, para começar por algum lugar")
-        elif n_mostradas > 0:
-            st.markdown(
-                f"##### {n_mostradas} matéria(s) do dia, para começar por algum lugar"
+        if not resultado_tendencia_periodo:
+            st.info(
+                "Nenhuma tendência disponível ainda para os dias/veículos deste período."
             )
         else:
-            st.markdown("##### Matérias do dia, para começar por algum lugar")
+            chave_periodo = tuple(resultado_tendencia_periodo["tendencias_diarias"])
 
-    if materias_amostra is None or materias_amostra.empty:
-        st.caption(
-            "Nenhuma matéria disponível para sorteio neste dia, com o filtro de "
-            "veículo atual."
+            if st.button("Gerar síntese do período", key="btn_sintese_periodo"):
+                with st.spinner("Sintetizando tendência do período..."):
+                    try:
+                        texto_sintese = sintetizar_tendencia_periodo(
+                            resultado_tendencia_periodo["tendencias_diarias"]
+                        )
+                        st.session_state["sintese_periodo_texto"] = texto_sintese
+                        st.session_state["sintese_periodo_chave"] = chave_periodo
+                    except Exception as e:
+                        st.error(f"Não foi possível gerar a síntese: {e}")
+
+            sintese_valida = (
+                st.session_state.get("sintese_periodo_chave") == chave_periodo
+                and st.session_state.get("sintese_periodo_texto")
+            )
+
+            if sintese_valida:
+                st.info(st.session_state["sintese_periodo_texto"])
+            else:
+                with st.expander("Ver frases diárias sem sintetizar"):
+                    for data_item, veiculo_item, texto_item in resultado_tendencia_periodo["tendencias_diarias"]:
+                        st.write(f"**{data_item}** ({veiculo_item}) — {texto_item}")
+
+
+    def renderizar_secao_sismografo(
+        prefixo_chave,
+        df_sismografo=None,
+        escala_sismografo=None,
+        mostrar_slider=True,
+        n_eventos_fixo=6,
+        mostrar_gauge_ritmo=True,
+        texto_ajuda=None,
+        mostrar_instrucoes=True,
+    ):
+        """Renderiza o widget do sismógrafo (detecção de picos de publicação +
+        boletim animado) e, opcionalmente, o gauge de ritmo do período.
+
+        Reutilizado por duas chamadas bem diferentes:
+        - seção "Sismógrafo" (exploração histórica completa): usa o df e a
+          escala vigentes na sidebar, slider de quantidade de picos, e mostra o
+          gauge de ritmo do período filtrado.
+        - "Cobertura do dia" (visão geral compacta): recebe df_sismografo já
+          restrito a uma janela fixa recente (últimos 30 dias, independente do
+          filtro de período da sidebar), escala fixa em "Dia", sem slider (um
+          número fixo de picos) e sem o gauge — que apareceria duplicado ali
+          (Parte 1 já mostra "Ritmo de publicação (hoje)").
+
+        df_sismografo/escala_sismografo caem para o df/escala globais da
+        sidebar quando não informados (comportamento da chamada histórica).
+        prefixo_chave evita colisão de key entre os dois widgets de slider."""
+        df_sismografo = df if df_sismografo is None else df_sismografo
+        escala_sismografo = escala if escala_sismografo is None else escala_sismografo
+
+        if texto_ajuda is None:
+            texto_ajuda = (
+                "Detecta automaticamente os picos de publicação no período em questão "
+                "e transforma cada um em um boletim — a matéria mais representativa daquele momento."
+            )
+
+        st.markdown(
+            f"### Sismógrafo de cobertura {icone_ajuda(texto_ajuda)}",
+            unsafe_allow_html=True
         )
-    else:
-        cols_materias = st.columns(len(materias_amostra))
-        for col, (_, materia) in zip(cols_materias, materias_amostra.iterrows()):
-            with col:
-                titulo_materia = html.escape(str(materia["Título"]) or "(sem título)")
-                editoria_materia = html.escape(str(materia["Editoria"]) or "—")
-                veiculo_materia = html.escape(str(materia.get("Veículo", "")) or "—")
-                autor_materia = html.escape(materia["Autor"] or "Redação")
-                url_materia = str(materia["URL"])
-                imagem_materia = str(materia.get("Imagem", "")).strip()
 
-                if url_materia.startswith("http"):
-                    titulo_html = f'<a href="{url_materia}" target="_blank" style="color:var(--text-color);text-decoration:none;">{titulo_materia}</a>'
+        if mostrar_slider:
+            n_eventos = st.slider(
+                "Quantidade de picos a destacar",
+                min_value=4, max_value=15, value=8,
+                key=f"n_eventos_sismografo_{prefixo_chave}"
+            )
+        else:
+            n_eventos = n_eventos_fixo
+
+        MAPA_COL_ESCALA = {"Dia": "date_dt", "Mês": "mes_dt", "Ano": "ano_dt"}
+
+        @st.cache_data
+        def detectar_eventos_destaque(chave_cache, _df_evt, escala_evt, n_eventos_evt):
+            """Identifica picos estatísticos de cobertura (contagem acima de
+            média + 1 desvio-padrão) e extrai, para cada pico, a matéria mais
+            longa publicada naquele período como 'manchete' representativa.
+
+            chave_cache serve apenas para invalidar o cache quando o df
+            filtrado mudar (DataFrames não são hashable — por isso _df_evt leva
+            underscore, pra o Streamlit não tentar fazer hash dele direto)."""
+            serie = agrupar_por_escala(_df_evt, escala_evt)
+
+            if len(serie) < 2:
+                return []
+
+            media = serie["Matérias"].mean()
+            desvio = serie["Matérias"].std()
+            limiar = media + desvio if desvio and desvio > 0 else media
+
+            candidatos = serie[serie["Matérias"] >= limiar].copy()
+            if len(candidatos) < 2:
+                candidatos = serie.copy()
+
+            candidatos = candidatos.nlargest(
+                min(n_eventos_evt, len(candidatos)), "Matérias"
+            )
+
+            col_dt = MAPA_COL_ESCALA[escala_evt]
+            eventos = []
+
+            for _, linha in candidatos.iterrows():
+                periodo_dt = linha[col_dt]
+
+                if escala_evt == "Dia":
+                    inicio_p = periodo_dt
+                    fim_p = periodo_dt + pd.Timedelta(days=1)
+                    rotulo = periodo_dt.strftime("%d/%m/%Y")
+                elif escala_evt == "Mês":
+                    inicio_p = periodo_dt
+                    fim_p = periodo_dt + pd.offsets.MonthBegin(1)
+                    rotulo = periodo_dt.strftime("%m/%Y")
                 else:
-                    titulo_html = titulo_materia
+                    inicio_p = periodo_dt
+                    fim_p = periodo_dt + pd.offsets.YearBegin(1)
+                    rotulo = periodo_dt.strftime("%Y")
 
-                if imagem_materia.startswith("http"):
-                    # Miniatura à esquerda, largura fixa e altura contida —
-                    # o texto (título, editoria, autor) fica ao lado, à
-                    # direita, em vez de embaixo.
-                    imagem_html = (
-                        f'<img src="{html.escape(imagem_materia)}" alt="" '
-                        f'style="width:96px;height:96px;object-fit:cover;'
-                        f'border-radius:6px;flex-shrink:0;display:block;" '
-                        f'onerror="this.style.display=\'none\';">'
-                    )
-                else:
-                    imagem_html = ""
+                grupo = _df_evt[(_df_evt[col_dt] >= inicio_p) & (_df_evt[col_dt] < fim_p)]
+                if grupo.empty:
+                    continue
 
+                principal = grupo.loc[grupo["Palavras"].idxmax()]
+
+                texto = str(principal["Texto"]).strip()
+                resumo = texto[:220] + ("…" if len(texto) > 220 else "")
+
+                url = str(principal["URL"]) if str(principal["URL"]).startswith("http") else ""
+
+                eventos.append({
+                    "data": rotulo,
+                    "data_ordenacao": periodo_dt.isoformat(),
+                    "titulo": principal["Título"] or "(sem título)",
+                    "editoria": principal["Editoria"] or "—",
+                    "autor": principal["Autor"] or "Redação",
+                    "url": url,
+                    "resumo": resumo if resumo.strip() else "Resumo indisponível para esta matéria.",
+                    "intensidade": int(linha["Matérias"]),
+                })
+
+            eventos.sort(key=lambda e: e["data_ordenacao"])
+            return eventos
+
+        chave_cache_sismografo = (
+            len(df_sismografo), df_sismografo["date_dt"].min(), df_sismografo["date_dt"].max()
+        )
+        eventos_destaque = detectar_eventos_destaque(
+            chave_cache_sismografo, df_sismografo, escala_sismografo, n_eventos
+        )
+
+        if len(eventos_destaque) < 2:
+            st.info(
+                "Dados insuficientes no período filtrado para montar o sismógrafo. "
+                "Tente ampliar o intervalo de datas na barra lateral."
+            )
+        else:
+            eventos_json = json.dumps(eventos_destaque, ensure_ascii=False)
+
+            SISMOGRAFO_HTML = """
+    <style>
+      #sismografo-root {
+        --ink: __INK__;
+        --ink-2: __INK2__;
+        --paper: __PAPER__;
+        --muted: #92998F;
+        --grid: #303632;
+        --teal: #5FBFA0;
+        --amber: #E8A33D;
+        --fonte-serif: Georgia, 'Iowan Old Style', 'Palatino Linotype', 'Times New Roman', serif;
+        --fonte-mono: 'SF Mono', 'Cascadia Code', Consolas, 'Liberation Mono', Menlo, monospace;
+        --fonte-sans: -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+        background: var(--ink);
+        border-radius: 18px;
+        padding: 28px 26px 22px;
+        font-family: var(--fonte-sans);
+        color: var(--paper);
+        position: relative;
+        overflow: hidden;
+      }
+      #sismografo-root .rotulo-topo {
+        font-family: var(--fonte-mono);
+        font-size: 0.72rem;
+        letter-spacing: 0.14em;
+        color: var(--teal);
+        text-transform: uppercase;
+        margin-bottom: 26px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      #sismografo-root .rotulo-topo::before {
+        content: "";
+        width: 7px; height: 7px;
+        border-radius: 50%;
+        background: var(--amber);
+        box-shadow: 0 0 8px var(--amber);
+        animation: piscar 1.6s ease-in-out infinite;
+      }
+      @keyframes piscar { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }
+
+      #waveform-track {
+        position: relative;
+        height: 210px;
+        margin: 0 6px 8px;
+        border-bottom: 2px solid var(--grid);
+      }
+      #waveform-track::before {
+        content: "";
+        position: absolute;
+        left: 0; right: 0; top: 0; bottom: 0;
+        background-image: repeating-linear-gradient(to top, transparent, transparent 34px, var(--grid) 35px);
+        opacity: 0.35;
+        pointer-events: none;
+      }
+      .scan-line {
+        position: absolute;
+        top: 0; bottom: 8px;
+        width: 2px;
+        background: linear-gradient(to bottom, transparent, var(--amber) 20%, var(--amber) 80%, transparent);
+        box-shadow: 0 0 14px var(--amber);
+        left: 0;
+        animation: varrer 1.9s cubic-bezier(.4,0,.2,1) forwards;
+        z-index: 3;
+      }
+      @keyframes varrer { from { left: 0%; } to { left: 100%; } }
+
+      .pulso {
+        position: absolute;
+        bottom: 0;
+        width: 5px;
+        height: var(--altura, 20%);
+        background: linear-gradient(to top, var(--teal), rgba(95,191,160,0.05));
+        border-radius: 3px 3px 0 0;
+        transform: scaleY(0);
+        transform-origin: bottom;
+        opacity: 0;
+        transition: opacity 0.5s ease, filter 0.3s ease;
+        cursor: pointer;
+      }
+      .pulso.alerta { background: linear-gradient(to top, var(--amber), rgba(232,163,61,0.05)); }
+      .pulso.visivel { opacity: 1; animation: subir 0.55s ease-out forwards; }
+      @keyframes subir { to { transform: scaleY(1); } }
+      .pulso.selecionado { filter: drop-shadow(0 0 10px var(--teal)); }
+      .pulso.alerta.selecionado { filter: drop-shadow(0 0 10px var(--amber)); }
+      .pulso:hover { filter: brightness(1.3); }
+
+      .marcador {
+        position: absolute;
+        top: -7px; left: 50%;
+        transform: translateX(-50%);
+        width: 12px; height: 12px;
+        border-radius: 50%;
+        background: var(--ink);
+        border: 2px solid var(--teal);
+        transition: transform 0.2s ease;
+      }
+      .pulso.alerta .marcador { border-color: var(--amber); }
+      .pulso:hover .marcador { transform: translateX(-50%) scale(1.35); }
+
+      .rotulo-data {
+        position: absolute;
+        bottom: -24px; left: 50%;
+        transform: translateX(-50%) rotate(-38deg);
+        transform-origin: top left;
+        font-family: var(--fonte-mono);
+        font-size: 0.68rem;
+        color: var(--muted);
+        white-space: nowrap;
+      }
+
+      #boletim {
+        margin-top: 46px;
+        background: var(--ink-2);
+        border: 1px solid var(--grid);
+        border-left: 3px solid var(--amber);
+        border-radius: 10px;
+        padding: 20px 24px;
+        transition: opacity 0.3s ease;
+      }
+      #boletim.oculto { opacity: 0; }
+      #bt-cabecalho {
+        font-family: var(--fonte-mono);
+        font-size: 0.72rem;
+        letter-spacing: 0.08em;
+        color: var(--amber);
+        margin-bottom: 12px;
+      }
+      #bt-titulo {
+        font-family: var(--fonte-serif);
+        font-weight: 700;
+        font-size: 1.5rem;
+        line-height: 1.3;
+        color: var(--paper);
+        min-height: 1.3em;
+        border-right: 2px solid transparent;
+      }
+      #bt-autor {
+        font-family: var(--fonte-sans);
+        font-size: 0.85rem;
+        color: var(--muted);
+        margin: 8px 0 14px;
+        font-style: italic;
+      }
+      #bt-resumo {
+        font-family: var(--fonte-sans);
+        font-size: 0.95rem;
+        line-height: 1.55;
+        color: #C7C2B4;
+      }
+      #bt-link {
+        display: inline-block;
+        margin-top: 16px;
+        font-family: var(--fonte-mono);
+        font-size: 0.78rem;
+        letter-spacing: 0.05em;
+        color: var(--teal);
+        text-decoration: none;
+        border: 1px solid var(--teal);
+        border-radius: 999px;
+        padding: 7px 16px;
+        transition: background 0.2s ease, color 0.2s ease;
+      }
+      #bt-link:hover { background: var(--teal); color: var(--ink); }
+      #bt-link.escondido { display: none; }
+    </style>
+
+    <div id="sismografo-root">
+      <div class="rotulo-topo">Leitura em tempo real — intensidade de cobertura</div>
+      <div id="waveform-track">
+        <div class="scan-line"></div>
+      </div>
+      <div id="boletim" class="oculto">
+        <div id="bt-cabecalho">BOLETIM</div>
+        <div id="bt-titulo"></div>
+        <div id="bt-autor"></div>
+        <div id="bt-resumo"></div>
+        <a id="bt-link" href="#" target="_blank" rel="noopener">Ler matéria completa →</a>
+      </div>
+    </div>
+
+    <script>
+    (function() {
+      const eventos = __EVENTOS_JSON__;
+      const track = document.getElementById('waveform-track');
+      const maxIntensidade = Math.max(...eventos.map(e => e.intensidade));
+      const minDate = new Date(eventos[0].data_ordenacao).getTime();
+      const maxDate = new Date(eventos[eventos.length - 1].data_ordenacao).getTime();
+      const spanDate = Math.max(maxDate - minDate, 1);
+
+      eventos.forEach((ev, i) => {
+        const t = new Date(ev.data_ordenacao).getTime();
+        const xPct = spanDate > 0 ? ((t - minDate) / spanDate) * 92 + 4 : 50;
+        const alturaPct = Math.max((ev.intensidade / maxIntensidade) * 85, 18);
+
+        const pulso = document.createElement('div');
+        pulso.className = 'pulso' + (ev.intensidade === maxIntensidade ? ' alerta' : '');
+        pulso.style.left = xPct + '%';
+        pulso.style.setProperty('--altura', alturaPct + '%');
+        pulso.style.transitionDelay = (i * 70) + 'ms';
+        pulso.dataset.index = i;
+
+        const marcador = document.createElement('div');
+        marcador.className = 'marcador';
+        marcador.title = ev.data + ' — ' + ev.titulo + ' (' + ev.intensidade + ' matéria(s))';
+        pulso.appendChild(marcador);
+
+        const rotulo = document.createElement('div');
+        rotulo.className = 'rotulo-data';
+        rotulo.textContent = ev.data;
+        pulso.appendChild(rotulo);
+
+        pulso.addEventListener('click', function() { mostrarBoletim(i); });
+        track.appendChild(pulso);
+      });
+
+      setTimeout(function() {
+        document.querySelectorAll('.pulso').forEach(function(p) { p.classList.add('visivel'); });
+      }, 350);
+
+      function mostrarBoletim(i) {
+        const ev = eventos[i];
+        document.querySelectorAll('.pulso').forEach(function(p) { p.classList.remove('selecionado'); });
+        const alvo = document.querySelector('.pulso[data-index="' + i + '"]');
+        if (alvo) alvo.classList.add('selecionado');
+
+        const boletim = document.getElementById('boletim');
+        boletim.classList.remove('oculto');
+
+        document.getElementById('bt-cabecalho').textContent =
+          'BOLETIM ▸ ' + ev.data + ' ▸ ' + String(ev.editoria).toUpperCase() + ' ▸ ' + ev.intensidade + ' MATÉRIA(S) NO PERÍODO';
+        document.getElementById('bt-autor').textContent = 'Por ' + ev.autor;
+        document.getElementById('bt-resumo').textContent = ev.resumo;
+
+        const link = document.getElementById('bt-link');
+        if (ev.url) {
+          link.href = ev.url;
+          link.classList.remove('escondido');
+        } else {
+          link.classList.add('escondido');
+        }
+
+        const tituloEl = document.getElementById('bt-titulo');
+        tituloEl.textContent = '';
+        let idx = 0;
+        if (window.__sismografoTyper) clearInterval(window.__sismografoTyper);
+        window.__sismografoTyper = setInterval(function() {
+          tituloEl.textContent += ev.titulo[idx] || '';
+          idx++;
+          if (idx >= ev.titulo.length) clearInterval(window.__sismografoTyper);
+        }, 16);
+      }
+
+      setTimeout(function() { mostrarBoletim(eventos.length - 1); }, 2100);
+    })();
+    </script>
+    """
+
+            cores = obter_cores_tema()
+            SISMOGRAFO_HTML = (
+                SISMOGRAFO_HTML
+                .replace("__EVENTOS_JSON__", eventos_json)
+                .replace("__INK__", cores["ink"])
+                .replace("__INK2__", cores["ink2"])
+                .replace("__PAPER__", cores["paper"])
+            )
+
+            components.html(SISMOGRAFO_HTML, height=560, scrolling=False)
+
+            if mostrar_instrucoes:
+                st.caption(
+                    "Clique em qualquer marcador da linha para ver o boletim daquele pico de cobertura. "
+                    "Barras em âmbar indicam o maior pico do período filtrado."
+                )
+
+        if mostrar_gauge_ritmo:
+            renderizar_gauge_ritmo(
+                "Ritmo de publicação (período selecionado)",
+                "Período filtrado",
+                ritmo_atual, ritmo_historico, razao_temperatura
+            )
+
+
+    if secao_selecionada == "Atores":
+        mostrar_periodo_no_topo(periodo_label_sidebar)
+        st.markdown('<div class="painel-eyebrow">Atores</div>', unsafe_allow_html=True)
+        st.markdown(
+            f"### Instituições, pessoas e abrangência do período "
+            f"{icone_ajuda('Agregados a partir da classificação já feita por matéria, no período/veículo/busca selecionados na barra lateral — filtrar aqui não tem custo adicional de IA.')}",
+            unsafe_allow_html=True
+        )
+        renderizar_bloco_classificacao(
+            df, "o período selecionado",
+            dimensoes={"instituicoes", "pessoas", "abrangencia"}
+        )
+
+
+    if secao_selecionada == "Sismógrafo":
+        mostrar_periodo_no_topo(periodo_label_sidebar)
+        escala = st.radio(
+            "Agrupar sismógrafo por",
+            ["Dia", "Mês", "Ano"],
+            index=1,
+            horizontal=True,
+            key="escala_sismografo"
+        )
+        renderizar_secao_sismografo("sismografo", escala_sismografo=escala)
+
+
+    if secao_selecionada == "Cobertura do dia":
+        st.markdown('<div class="painel-eyebrow">Cobertura do dia</div>', unsafe_allow_html=True)
+
+        # =========================
+        # Parte 1: pulso de hoje — compacto, sempre o dia mais recente do
+        # dataset, independente do período selecionado na barra lateral.
+        # =========================
+        st.markdown(f"#### Hoje — {data_mais_recente_str}")
+        st.caption(
+            f"{numero_br(n_materias_hoje)} matéria(s) publicadas em {data_mais_recente_str} "
+            f"({nome_dia_semana_hoje}, todos os veículos)."
+        )
+
+        renderizar_gauge_ritmo(
+            "Ritmo de publicação (hoje)",
+            f"Hoje ({nome_dia_semana_hoje})",
+            n_materias_hoje, ritmo_historico_dia_semana_hoje, razao_dia,
+            rotulo_historico=f"Histórico de {nome_dia_semana_hoje}s"
+        )
+
+        if resultado_tendencia_hoje:
+            tendencias_hoje = resultado_tendencia_hoje["tendencias_diarias"]
+
+            if len(tendencias_hoje) == 1:
+                _, _, texto_tendencia = tendencias_hoje[0]
                 st.markdown(
                     f"""
-                    <div class="card-panorama" style="min-height:130px;display:flex;gap:12px;align-items:flex-start;">
-                        {imagem_html}
-                        <div style="flex:1;min-width:0;">
-                            <div style="font-family:'SF Mono',Consolas,monospace;font-size:0.7rem;
-                                        color:#92998F;text-transform:uppercase;letter-spacing:0.05em;
-                                        margin-bottom:8px;">{editoria_materia} · {veiculo_materia}</div>
-                            <div style="font-weight:600;margin-bottom:10px;line-height:1.4;">{titulo_html}</div>
-                            <div style="font-size:0.8rem;color:#92998F;font-style:italic;">{autor_materia}</div>
-                        </div>
+                    <div class="insight-box">
+                        <div class="insight-title">Tendência do dia</div>
+                        {html.escape(texto_tendencia)}
                     </div>
                     """,
                     unsafe_allow_html=True
                 )
-
-    st.divider()
-
-    # =========================
-    # Parte 2: sismógrafo compacto — janela recente ajustável pelo usuário,
-    # independente do filtro de período da sidebar. O controle permite até
-    # 183 dias (aproximadamente seis meses), mantendo a escala fixa em Dia.
-    # =========================
-    dias_sismografo_home = st.slider(
-        "Dias exibidos no sismógrafo",
-        min_value=7,
-        max_value=183,
-        value=30,
-        step=1,
-        key="dias_sismografo_home"
-    )
-
-    janela_sismografo_dia = (
-        data_mais_recente_dt - pd.Timedelta(days=dias_sismografo_home)
-        if pd.notna(data_mais_recente_dt) else None
-    )
-    df_janela_recente = (
-        df_original[
-            (df_original["date_dt"] > janela_sismografo_dia)
-            & (df_original["date_dt"] <= data_mais_recente_dt)
-            & (df_original["Veículo"].isin(veiculos_selecionados))
-        ]
-        if janela_sismografo_dia is not None else df_original.iloc[0:0]
-    )
-
-    if len(df_janela_recente) > 0:
-        renderizar_secao_sismografo(
-            "cobertura_dia",
-            df_sismografo=df_janela_recente,
-            escala_sismografo="Dia",
-            mostrar_slider=False,
-            n_eventos_fixo=6,
-            mostrar_gauge_ritmo=False,
-            texto_ajuda="Detecta automaticamente picos de publicação",
-            mostrar_instrucoes=False,
-        )
-    else:
-        st.info(
-            "Sem matérias suficientes no período escolhido, com o filtro de "
-            "veículo atual, para montar o sismógrafo."
-        )
-
-    st.divider()
-
-    # =========================
-    # Parte 3: classificação por IA — só das matérias de hoje.
-    # =========================
-    renderizar_bloco_classificacao(df_hoje_filtrado, "hoje")
-
-
-@st.cache_data
-def construir_elementos_rede(listas_termos, top_clusters=8):
-    """Constrói o grafo de coocorrência de palavras-chave e detecta
-    comunidades via Louvain — mesma lógica de rede_semantica.py, mas
-    rodando sob demanda sobre qualquer conjunto de matérias (aqui, as do
-    período filtrado pela sidebar), em vez de um ano inteiro pré-processado."""
-    G = nx.Graph()
-    frequencia_nos = Counter()
-
-    for termos in listas_termos:
-        termos = [t.strip() for t in termos if isinstance(t, str) and len(t.strip()) > 2]
-        termos = list(dict.fromkeys(termos))
-
-        for termo in termos:
-            frequencia_nos[termo] += 1
-            G.add_node(termo)
-
-        for a, b in combinations(termos, 2):
-            if G.has_edge(a, b):
-                G[a][b]["weight"] += 1
-            else:
-                G.add_edge(a, b, weight=1)
-
-    arestas_fracas = [(a, b) for a, b, d in G.edges(data=True) if d["weight"] < 2]
-    G.remove_edges_from(arestas_fracas)
-    G.remove_nodes_from(list(nx.isolates(G)))
-
-    if len(G.nodes()) == 0:
-        return [], []
-
-    particao = community_louvain.best_partition(G, weight="weight", random_state=42)
-    freq_comunidades = Counter(particao.values())
-
-    maiores_comunidades = [c for c, _ in freq_comunidades.most_common(top_clusters)]
-    comunidade_para_indice = {c: i for i, c in enumerate(maiores_comunidades)}
-
-    cores = [
-        "#5FBFA0", "#E8A33D", "#92998F", "#9467BD",
-        "#E07A5F", "#4D908E", "#F2CC8F", "#277DA1"
-    ]
-
-    termos_por_comunidade = defaultdict(list)
-    for node in G.nodes():
-        termos_por_comunidade[particao[node]].append(node)
-
-    rotulos_comunidades = {}
-    for comunidade in maiores_comunidades:
-        termos_ordenados = sorted(
-            termos_por_comunidade[comunidade],
-            key=lambda t: frequencia_nos[t],
-            reverse=True
-        )
-        rotulos_comunidades[comunidade] = ", ".join(termos_ordenados[:4])
-
-    elementos = []
-
-    # Nós-container por comunidade (compound nodes) — viram as "bolhas de
-    # fundo" que agrupam visualmente os termos de cada cluster.
-    for comunidade in maiores_comunidades:
-        indice = comunidade_para_indice[comunidade]
-        elementos.append({
-            "data": {
-                "id": f"cluster_{indice}",
-                "label": rotulos_comunidades[comunidade],
-                "cor_cluster": cores[indice % len(cores)],
-                "tipo": "cluster"
-            }
-        })
-
-    tem_outras = False
-
-    for node in G.nodes():
-        freq = frequencia_nos[node]
-        grau = G.degree(node)
-        forca = sum(G[node][viz]["weight"] for viz in G.neighbors(node))
-        tamanho_no = 45 + math.sqrt(freq) * 18
-
-        comunidade_original = particao[node]
-        if comunidade_original in comunidade_para_indice:
-            indice_cluster = comunidade_para_indice[comunidade_original]
-            cor = cores[indice_cluster % len(cores)]
-            rotulo_cluster = rotulos_comunidades[comunidade_original]
-            parent_id = f"cluster_{indice_cluster}"
+            elif len(tendencias_hoje) > 1:
+                linhas_tendencia_html = "".join(
+                    f'<p style="margin:0 0 10px 0;"><b>{html.escape(veiculo)}:</b> {html.escape(texto)}</p>'
+                    for _, veiculo, texto in tendencias_hoje
+                )
+                st.markdown(
+                    f"""
+                    <div class="insight-box">
+                        <div class="insight-title">Tendência do dia (por veículo)</div>
+                        {linhas_tendencia_html}
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
         else:
-            indice_cluster = 999
-            cor = "#3A4258"
-            rotulo_cluster = "Outras comunidades"
-            parent_id = "cluster_outras"
-            tem_outras = True
+            st.caption(
+                "Tendência do dia ainda não disponível para este dia/veículo."
+            )
 
-        elementos.append({
-            "data": {
-                "id": node,
-                "label": node,
-                "freq": freq,
-                "grau": grau,
-                "forca": forca,
-                "size": tamanho_no,
-                "cluster": indice_cluster,
-                "cluster_label": rotulo_cluster,
-                "color": cor,
-                "tipo": "termo",
-                "parent": parent_id
-            }
-        })
+        col_titulo_sorteio, col_botao_sorteio = st.columns([4, 1])
+        with col_botao_sorteio:
+            sortear_novamente = st.button("Sortear outras", key="btn_sortear_materias")
 
-    if tem_outras:
-        elementos.append({
-            "data": {
-                "id": "cluster_outras",
-                "label": "Outras comunidades",
-                "cor_cluster": "#3A4258",
-                "tipo": "cluster"
-            }
-        })
+        df_dia_completo = df_hoje_filtrado
 
-    for a, b, d in G.edges(data=True):
-        peso = d["weight"]
-        elementos.append({
-            "data": {
-                "id": f"{a}__{b}",
-                "source": a,
-                "target": b,
-                "weight": peso,
-                "width": 1 + math.sqrt(peso)
-            }
-        })
+        # Chave de cache inclui a seleção de veículos, não só a data — sem
+        # isso, trocar o filtro de veículo não invalidava o sorteio, e podia
+        # continuar mostrando matérias de fora do filtro atual (ou travado em
+        # menos matérias do que realmente havia disponível para o novo filtro).
+        chave_sorteio_atual = (data_mais_recente_str, tuple(sorted(veiculos_selecionados)))
 
-    legenda = []
-    for comunidade in maiores_comunidades:
-        indice = comunidade_para_indice[comunidade]
-        legenda.append({
-            "nome": rotulos_comunidades[comunidade],
-            "cor": cores[indice % len(cores)],
-            "cluster": indice,
-            "n": freq_comunidades[comunidade]
-        })
+        precisa_sortear = (
+            sortear_novamente
+            or "materias_aleatorias_chave" not in st.session_state
+            or st.session_state.get("materias_aleatorias_chave") != chave_sorteio_atual
+        )
 
-    outras = sum(q for c, q in freq_comunidades.items() if c not in maiores_comunidades)
-    if outras > 0:
-        legenda.append({"nome": "Outras comunidades", "cor": "#424942", "cluster": 999, "n": outras})
+        if precisa_sortear:
+            n_amostra = min(3, len(df_dia_completo))
+            st.session_state["materias_aleatorias"] = (
+                df_dia_completo.sample(n=n_amostra) if n_amostra > 0 else df_dia_completo
+            )
+            st.session_state["materias_aleatorias_chave"] = chave_sorteio_atual
 
-    return elementos, legenda
+        materias_amostra = st.session_state.get("materias_aleatorias")
+        n_mostradas = 0 if materias_amostra is None else len(materias_amostra)
+
+        with col_titulo_sorteio:
+            if n_mostradas == 3:
+                st.markdown("##### Três matérias do dia, para começar por algum lugar")
+            elif n_mostradas > 0:
+                st.markdown(
+                    f"##### {n_mostradas} matéria(s) do dia, para começar por algum lugar"
+                )
+            else:
+                st.markdown("##### Matérias do dia, para começar por algum lugar")
+
+        if materias_amostra is None or materias_amostra.empty:
+            st.caption(
+                "Nenhuma matéria disponível para sorteio neste dia, com o filtro de "
+                "veículo atual."
+            )
+        else:
+            cols_materias = st.columns(len(materias_amostra))
+            for indice_materia, (col, (_, materia)) in enumerate(
+                zip(cols_materias, materias_amostra.iterrows())
+            ):
+                with col:
+                    titulo_materia = html.escape(str(materia["Título"]) or "(sem título)")
+                    editoria_materia = html.escape(str(materia["Editoria"]) or "—")
+                    veiculo_materia = html.escape(str(materia.get("Veículo", "")) or "—")
+                    autor_materia = html.escape(materia["Autor"] or "Redação")
+                    url_materia = str(materia["URL"])
+                    imagem_materia = str(materia.get("Imagem", "")).strip()
+
+                    if url_materia.startswith("http"):
+                        titulo_html = f'<a href="{url_materia}" target="_blank" style="color:var(--text-color);text-decoration:none;">{titulo_materia}</a>'
+                    else:
+                        titulo_html = titulo_materia
+
+                    if imagem_materia.startswith("http"):
+                        # Miniatura à esquerda, largura fixa e altura contida —
+                        # o texto (título, editoria, autor) fica ao lado, à
+                        # direita, em vez de embaixo.
+                        imagem_html = (
+                            f'<img src="{html.escape(imagem_materia)}" alt="" '
+                            f'style="width:96px;height:96px;object-fit:cover;'
+                            f'border-radius:6px;flex-shrink:0;display:block;" '
+                            f'onerror="this.style.display=\'none\';">'
+                        )
+                    else:
+                        imagem_html = ""
+
+                    st.markdown(
+                        f"""
+                        <div class="card-panorama" style="--obs-delay:{indice_materia * 60}ms;min-height:130px;display:flex;gap:12px;align-items:flex-start;">
+                            {imagem_html}
+                            <div style="flex:1;min-width:0;">
+                                <div style="font-family:'SF Mono',Consolas,monospace;font-size:0.7rem;
+                                            color:#92998F;text-transform:uppercase;letter-spacing:0.05em;
+                                            margin-bottom:8px;">{editoria_materia} · {veiculo_materia}</div>
+                                <div style="font-weight:600;margin-bottom:10px;line-height:1.4;">{titulo_html}</div>
+                                <div style="font-size:0.8rem;color:#92998F;font-style:italic;">{autor_materia}</div>
+                            </div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True
+                    )
+
+        st.divider()
+
+        # =========================
+        # Parte 2: sismógrafo compacto — janela recente ajustável pelo usuário,
+        # independente do filtro de período da sidebar. O controle permite até
+        # 183 dias (aproximadamente seis meses), mantendo a escala fixa em Dia.
+        # =========================
+        dias_sismografo_home = st.slider(
+            "Dias exibidos no sismógrafo",
+            min_value=7,
+            max_value=183,
+            value=30,
+            step=1,
+            key="dias_sismografo_home"
+        )
+
+        janela_sismografo_dia = (
+            data_mais_recente_dt - pd.Timedelta(days=dias_sismografo_home)
+            if pd.notna(data_mais_recente_dt) else None
+        )
+        df_janela_recente = (
+            df_original[
+                (df_original["date_dt"] > janela_sismografo_dia)
+                & (df_original["date_dt"] <= data_mais_recente_dt)
+                & (df_original["Veículo"].isin(veiculos_selecionados))
+            ]
+            if janela_sismografo_dia is not None else df_original.iloc[0:0]
+        )
+
+        if len(df_janela_recente) > 0:
+            renderizar_secao_sismografo(
+                "cobertura_dia",
+                df_sismografo=df_janela_recente,
+                escala_sismografo="Dia",
+                mostrar_slider=False,
+                n_eventos_fixo=6,
+                mostrar_gauge_ritmo=False,
+                texto_ajuda="Detecta automaticamente picos de publicação",
+                mostrar_instrucoes=False,
+            )
+        else:
+            st.info(
+                "Sem matérias suficientes no período escolhido, com o filtro de "
+                "veículo atual, para montar o sismógrafo."
+            )
+
+        st.divider()
+
+        # =========================
+        # Parte 3: classificação por IA — só das matérias de hoje.
+        # =========================
+        renderizar_bloco_classificacao(df_hoje_filtrado, "hoje")
 
 
-def renderizar_rede_semantica_html(elementos, legenda, titulo):
-    """Monta o HTML/Cytoscape.js da rede semântica, no mesmo estilo visual
-    (ink/teal/âmbar) do resto do app. Inclui: layout fcose (com fallback
-    para cose se o CDN falhar), halo por cluster, bolhas de fundo por
-    comunidade (compound nodes), destaque de comunidade ao passar o mouse
-    e entrada animada dos elementos."""
-    elementos_json = json.dumps(elementos, ensure_ascii=False)
-    legenda_json = json.dumps(legenda, ensure_ascii=False)
-    titulo_escapado = html.escape(titulo)
-    cores = obter_cores_tema()
+    @st.cache_data
+    def construir_elementos_rede(listas_termos, top_clusters=8):
+        """Constrói o grafo de coocorrência de palavras-chave e detecta
+        comunidades via Louvain — mesma lógica de rede_semantica.py, mas
+        rodando sob demanda sobre qualquer conjunto de matérias (aqui, as do
+        período filtrado pela sidebar), em vez de um ano inteiro pré-processado."""
+        G = nx.Graph()
+        frequencia_nos = Counter()
 
-    return f"""
-<style>
-  body {{ margin: 0; font-family: -apple-system, 'Segoe UI', Arial, sans-serif; background: {cores['ink']}; }}
-  #cy {{ width: 100%; height: 720px; display: block; }}
-  #titulo {{
-    position: absolute; top: 16px; left: 20px; z-index: 10;
-    background: rgba({cores['ink2_rgb']},0.92); padding: 10px 14px; border-radius: 8px;
-    font-size: 15px; font-weight: bold; color: {cores['paper']};
-    border: 1px solid #303632;
-  }}
-  #legenda {{
-    position: absolute; top: 62px; left: 20px; z-index: 10;
-    background: rgba({cores['ink2_rgb']},0.92); padding: 12px 14px; border-radius: 8px;
-    font-size: 13px; color: {cores['paper']}; max-width: 320px;
-    border: 1px solid #303632;
-  }}
-  .legenda-titulo {{
-    font-weight: bold; margin-bottom: 8px; font-family: 'SF Mono', Consolas, monospace;
-    font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; color: #5FBFA0;
-  }}
-  .item-legenda {{ display: flex; align-items: flex-start; margin-bottom: 7px; gap: 8px; line-height: 1.25; }}
-  .cor-legenda {{ width: 14px; height: 14px; border-radius: 50%; display: inline-block; flex: 0 0 14px; margin-top: 2px; }}
-  .texto-legenda {{ flex: 1; }}
-  .n-legenda {{ color: #92998F; font-size: 12px; }}
-</style>
+        for termos in listas_termos:
+            termos = [t.strip() for t in termos if isinstance(t, str) and len(t.strip()) > 2]
+            termos = list(dict.fromkeys(termos))
 
-<div id="titulo">{titulo_escapado}</div>
-<div id="legenda"></div>
-<div id="cy"></div>
+            for termo in termos:
+                frequencia_nos[termo] += 1
+                G.add_node(termo)
 
-<script src="https://unpkg.com/cytoscape@3.28.1/dist/cytoscape.min.js"></script>
-<script src="https://unpkg.com/layout-base/layout-base.js"></script>
-<script src="https://unpkg.com/cose-base/cose-base.js"></script>
-<script src="https://unpkg.com/cytoscape-fcose/cytoscape-fcose.js"></script>
-<script>
-const elementos = {elementos_json};
-const legendaDados = {legenda_json};
+            for a, b in combinations(termos, 2):
+                if G.has_edge(a, b):
+                    G[a][b]["weight"] += 1
+                else:
+                    G.add_edge(a, b, weight=1)
 
-// fcose dá um layout bem mais limpo pra grafos com clusters do que o cose
-// padrão; se o CDN falhar por algum motivo, cai pro cose sem quebrar a página.
-var fcoseDisponivel = (typeof cytoscapeFcose !== 'undefined');
-if (fcoseDisponivel) {{
-    cytoscape.use(cytoscapeFcose);
-}}
+        arestas_fracas = [(a, b) for a, b, d in G.edges(data=True) if d["weight"] < 2]
+        G.remove_edges_from(arestas_fracas)
+        G.remove_nodes_from(list(nx.isolates(G)))
 
-const legenda = document.getElementById("legenda");
-const tituloLegenda = document.createElement("div");
-tituloLegenda.className = "legenda-titulo";
-tituloLegenda.innerText = "Principais comunidades";
-legenda.appendChild(tituloLegenda);
+        if len(G.nodes()) == 0:
+            return [], []
 
-legendaDados.forEach(function(item) {{
-    const linha = document.createElement("div");
-    linha.className = "item-legenda";
-    const cor = document.createElement("span");
-    cor.className = "cor-legenda";
-    cor.style.backgroundColor = item.cor;
-    const texto = document.createElement("div");
-    texto.className = "texto-legenda";
-    texto.innerHTML = item.nome + "<br><span class='n-legenda'>" + item.n + " termos</span>";
-    linha.appendChild(cor);
-    linha.appendChild(texto);
-    legenda.appendChild(linha);
-}});
+        particao = community_louvain.best_partition(G, weight="weight", random_state=42)
+        freq_comunidades = Counter(particao.values())
 
-const cy = cytoscape({{
-    container: document.getElementById('cy'),
-    elements: elementos,
-    style: [
-        {{ selector: 'node[tipo = "cluster"]', style: {{
-            'shape': 'round-rectangle',
-            'background-color': 'data(cor_cluster)',
-            'background-opacity': 0.10,
-            'border-width': 1,
-            'border-color': 'data(cor_cluster)',
-            'border-opacity': 0.4,
-            'border-style': 'dashed',
-            'label': 'data(label)',
-            'text-valign': 'top',
-            'text-halign': 'center',
-            'text-margin-y': -8,
-            'font-size': 11,
-            'font-family': "'SF Mono', Consolas, monospace",
-            'font-weight': 'bold',
-            'text-transform': 'uppercase',
-            'color': 'data(cor_cluster)',
-            'text-opacity': 0.9,
-            'padding': 26,
-            'z-compound-depth': 'bottom'
-        }} }},
-        {{ selector: 'node[tipo = "termo"]', style: {{
-            'width': 'data(size)', 'height': 'data(size)',
-            'background-color': 'data(color)',
-            'border-width': 2, 'border-color': '#E8E4D8',
-            'label': 'data(label)', 'text-valign': 'center', 'text-halign': 'center',
-            'text-wrap': 'wrap', 'text-max-width': '95px',
-            'font-size': 16, 'font-family': 'Arial', 'font-weight': 'bold',
-            'color': '#10151F', 'text-outline-width': 2, 'text-outline-color': '#E8E4D8',
-            'overlay-color': 'data(color)',
-            'overlay-opacity': 0.22,
-            'overlay-padding': 10,
-            'overlay-shape': 'ellipse',
-            'z-compound-depth': 'top'
-        }} }},
-        {{ selector: 'edge', style: {{
-            'width': 'data(width)', 'line-color': '#4D5752', 'opacity': 0.55, 'curve-style': 'bezier'
-        }} }},
-        {{ selector: 'node[tipo = "termo"]:hover', style: {{ 'border-width': 4, 'border-color': '#E8A33D', 'font-size': 20, 'overlay-opacity': 0.4 }} }},
-        {{ selector: 'edge:hover', style: {{ 'line-color': '#E8A33D', 'opacity': 0.9 }} }},
-        {{ selector: '.dimmed', style: {{ 'opacity': 0.10, 'text-opacity': 0.10 }} }}
-    ],
-    layout: {{ name: 'preset' }}
-}});
+        maiores_comunidades = [c for c, _ in freq_comunidades.most_common(top_clusters)]
+        comunidade_para_indice = {c: i for i, c in enumerate(maiores_comunidades)}
 
-// Entrada animada: tudo começa invisível, o layout calcula as posições em
-// segundo plano, e só depois os elementos aparecem progressivamente.
-cy.elements().style('opacity', 0);
+        cores = [
+            "#5FBFA0", "#E8A33D", "#92998F", "#9467BD",
+            "#E07A5F", "#4D908E", "#F2CC8F", "#277DA1"
+        ]
 
-const opcoesLayout = fcoseDisponivel ? {{
-    name: 'fcose',
-    quality: 'proof',
-    animate: false,
-    randomize: true,
-    nodeSeparation: 90,
-    idealEdgeLength: 120,
-    nodeRepulsion: 8000,
-    nestingFactor: 0.4,
-    packComponents: true,
-    fit: false
-}} : {{
-    name: 'cose',
-    animate: false,
-    randomize: true,
-    nodeRepulsion: 800000,
-    idealEdgeLength: 140,
-    edgeElasticity: 80,
-    gravity: 80,
-    numIter: 1000,
-    fit: false
-}};
+        termos_por_comunidade = defaultdict(list)
+        for node in G.nodes():
+            termos_por_comunidade[particao[node]].append(node)
 
-const layout = cy.layout(opcoesLayout);
+        rotulos_comunidades = {}
+        for comunidade in maiores_comunidades:
+            termos_ordenados = sorted(
+                termos_por_comunidade[comunidade],
+                key=lambda t: frequencia_nos[t],
+                reverse=True
+            )
+            rotulos_comunidades[comunidade] = ", ".join(termos_ordenados[:4])
 
-layout.on('layoutstop', function() {{
-    cy.fit(undefined, 40);
+        elementos = []
 
-    const nosTermo = cy.nodes('[tipo = "termo"]');
-    const nosCluster = cy.nodes('[tipo = "cluster"]');
+        # Nós-container por comunidade (compound nodes) — viram as "bolhas de
+        # fundo" que agrupam visualmente os termos de cada cluster.
+        for comunidade in maiores_comunidades:
+            indice = comunidade_para_indice[comunidade]
+            elementos.append({
+                "data": {
+                    "id": f"cluster_{indice}",
+                    "label": rotulos_comunidades[comunidade],
+                    "cor_cluster": cores[indice % len(cores)],
+                    "tipo": "cluster"
+                }
+            })
 
-    nosCluster.forEach(function(n) {{
-        n.animate({{ style: {{ opacity: 1 }} }}, {{ duration: 500, easing: 'ease-out' }});
-    }});
+        tem_outras = False
 
-    nosTermo.forEach(function(n, i) {{
-        n.delay(i * 22).animate({{ style: {{ opacity: 1 }} }}, {{ duration: 380, easing: 'ease-out' }});
-    }});
+        for node in G.nodes():
+            freq = frequencia_nos[node]
+            grau = G.degree(node)
+            forca = sum(G[node][viz]["weight"] for viz in G.neighbors(node))
+            tamanho_no = 45 + math.sqrt(freq) * 18
 
-    cy.edges().delay(nosTermo.length * 22 + 250).animate(
-        {{ style: {{ opacity: 0.55 }} }}, {{ duration: 500, easing: 'ease-out' }}
-    );
-}});
+            comunidade_original = particao[node]
+            if comunidade_original in comunidade_para_indice:
+                indice_cluster = comunidade_para_indice[comunidade_original]
+                cor = cores[indice_cluster % len(cores)]
+                rotulo_cluster = rotulos_comunidades[comunidade_original]
+                parent_id = f"cluster_{indice_cluster}"
+            else:
+                indice_cluster = 999
+                cor = "#3A4258"
+                rotulo_cluster = "Outras comunidades"
+                parent_id = "cluster_outras"
+                tem_outras = True
 
-layout.run();
+            elementos.append({
+                "data": {
+                    "id": node,
+                    "label": node,
+                    "freq": freq,
+                    "grau": grau,
+                    "forca": forca,
+                    "size": tamanho_no,
+                    "cluster": indice_cluster,
+                    "cluster_label": rotulo_cluster,
+                    "color": cor,
+                    "tipo": "termo",
+                    "parent": parent_id
+                }
+            })
 
-// Destaque por comunidade ao passar o mouse (spotlight): esmaece tudo
-// que não pertence à mesma bolha do nó em foco.
-cy.on('mouseover', 'node[tipo = "termo"]', function(evt) {{
-    const n = evt.target;
-    const parentId = n.data('parent');
+        if tem_outras:
+            elementos.append({
+                "data": {
+                    "id": "cluster_outras",
+                    "label": "Outras comunidades",
+                    "cor_cluster": "#3A4258",
+                    "tipo": "cluster"
+                }
+            })
 
-    let grupo = n.closedNeighborhood('node');
-    if (parentId) {{
-        grupo = cy.nodes('[parent = "' + parentId + '"]').union(cy.getElementById(parentId));
+        for a, b, d in G.edges(data=True):
+            peso = d["weight"]
+            elementos.append({
+                "data": {
+                    "id": f"{a}__{b}",
+                    "source": a,
+                    "target": b,
+                    "weight": peso,
+                    "width": 1 + math.sqrt(peso)
+                }
+            })
+
+        legenda = []
+        for comunidade in maiores_comunidades:
+            indice = comunidade_para_indice[comunidade]
+            legenda.append({
+                "nome": rotulos_comunidades[comunidade],
+                "cor": cores[indice % len(cores)],
+                "cluster": indice,
+                "n": freq_comunidades[comunidade]
+            })
+
+        outras = sum(q for c, q in freq_comunidades.items() if c not in maiores_comunidades)
+        if outras > 0:
+            legenda.append({"nome": "Outras comunidades", "cor": "#424942", "cluster": 999, "n": outras})
+
+        return elementos, legenda
+
+
+    def renderizar_rede_semantica_html(elementos, legenda, titulo):
+        """Monta o HTML/Cytoscape.js da rede semântica, no mesmo estilo visual
+        (ink/teal/âmbar) do resto do app. Inclui: layout fcose (com fallback
+        para cose se o CDN falhar), halo por cluster, bolhas de fundo por
+        comunidade (compound nodes), destaque de comunidade ao passar o mouse
+        e entrada animada dos elementos."""
+        elementos_json = json.dumps(elementos, ensure_ascii=False)
+        legenda_json = json.dumps(legenda, ensure_ascii=False)
+        titulo_escapado = html.escape(titulo)
+        cores = obter_cores_tema()
+
+        return f"""
+    <style>
+      body {{ margin: 0; font-family: -apple-system, 'Segoe UI', Arial, sans-serif; background: {cores['ink']}; }}
+      #cy {{ width: 100%; height: 720px; display: block; }}
+      #titulo {{
+        position: absolute; top: 16px; left: 20px; z-index: 10;
+        background: rgba({cores['ink2_rgb']},0.92); padding: 10px 14px; border-radius: 8px;
+        font-size: 15px; font-weight: bold; color: {cores['paper']};
+        border: 1px solid #303632;
+      }}
+      #legenda {{
+        position: absolute; top: 62px; left: 20px; z-index: 10;
+        background: rgba({cores['ink2_rgb']},0.92); padding: 12px 14px; border-radius: 8px;
+        font-size: 13px; color: {cores['paper']}; max-width: 320px;
+        border: 1px solid #303632;
+      }}
+      .legenda-titulo {{
+        font-weight: bold; margin-bottom: 8px; font-family: 'SF Mono', Consolas, monospace;
+        font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; color: #5FBFA0;
+      }}
+      .item-legenda {{ display: flex; align-items: flex-start; margin-bottom: 7px; gap: 8px; line-height: 1.25; }}
+      .cor-legenda {{ width: 14px; height: 14px; border-radius: 50%; display: inline-block; flex: 0 0 14px; margin-top: 2px; }}
+      .texto-legenda {{ flex: 1; }}
+      .n-legenda {{ color: #92998F; font-size: 12px; }}
+    </style>
+
+    <div id="titulo">{titulo_escapado}</div>
+    <div id="legenda"></div>
+    <div id="cy"></div>
+
+    <script src="https://unpkg.com/cytoscape@3.28.1/dist/cytoscape.min.js"></script>
+    <script src="https://unpkg.com/layout-base/layout-base.js"></script>
+    <script src="https://unpkg.com/cose-base/cose-base.js"></script>
+    <script src="https://unpkg.com/cytoscape-fcose/cytoscape-fcose.js"></script>
+    <script>
+    const elementos = {elementos_json};
+    const legendaDados = {legenda_json};
+
+    // fcose dá um layout bem mais limpo pra grafos com clusters do que o cose
+    // padrão; se o CDN falhar por algum motivo, cai pro cose sem quebrar a página.
+    var fcoseDisponivel = (typeof cytoscapeFcose !== 'undefined');
+    if (fcoseDisponivel) {{
+        cytoscape.use(cytoscapeFcose);
     }}
 
-    const arestasInternas = grupo.connectedEdges().filter(function(e) {{
-        return grupo.contains(e.source()) && grupo.contains(e.target());
+    const legenda = document.getElementById("legenda");
+    const tituloLegenda = document.createElement("div");
+    tituloLegenda.className = "legenda-titulo";
+    tituloLegenda.innerText = "Principais comunidades";
+    legenda.appendChild(tituloLegenda);
+
+    legendaDados.forEach(function(item) {{
+        const linha = document.createElement("div");
+        linha.className = "item-legenda";
+        const cor = document.createElement("span");
+        cor.className = "cor-legenda";
+        cor.style.backgroundColor = item.cor;
+        const texto = document.createElement("div");
+        texto.className = "texto-legenda";
+        texto.innerHTML = item.nome + "<br><span class='n-legenda'>" + item.n + " termos</span>";
+        linha.appendChild(cor);
+        linha.appendChild(texto);
+        legenda.appendChild(linha);
     }});
 
-    const destaque = grupo.union(arestasInternas);
-
-    cy.batch(function() {{
-        cy.elements().addClass('dimmed');
-        destaque.removeClass('dimmed');
+    const cy = cytoscape({{
+        container: document.getElementById('cy'),
+        elements: elementos,
+        style: [
+            {{ selector: 'node[tipo = "cluster"]', style: {{
+                'shape': 'round-rectangle',
+                'background-color': 'data(cor_cluster)',
+                'background-opacity': 0.10,
+                'border-width': 1,
+                'border-color': 'data(cor_cluster)',
+                'border-opacity': 0.4,
+                'border-style': 'dashed',
+                'label': 'data(label)',
+                'text-valign': 'top',
+                'text-halign': 'center',
+                'text-margin-y': -8,
+                'font-size': 11,
+                'font-family': "'SF Mono', Consolas, monospace",
+                'font-weight': 'bold',
+                'text-transform': 'uppercase',
+                'color': 'data(cor_cluster)',
+                'text-opacity': 0.9,
+                'padding': 26,
+                'z-compound-depth': 'bottom'
+            }} }},
+            {{ selector: 'node[tipo = "termo"]', style: {{
+                'width': 'data(size)', 'height': 'data(size)',
+                'background-color': 'data(color)',
+                'border-width': 2, 'border-color': '#E8E4D8',
+                'label': 'data(label)', 'text-valign': 'center', 'text-halign': 'center',
+                'text-wrap': 'wrap', 'text-max-width': '95px',
+                'font-size': 16, 'font-family': 'Arial', 'font-weight': 'bold',
+                'color': '#10151F', 'text-outline-width': 2, 'text-outline-color': '#E8E4D8',
+                'overlay-color': 'data(color)',
+                'overlay-opacity': 0.22,
+                'overlay-padding': 10,
+                'overlay-shape': 'ellipse',
+                'z-compound-depth': 'top'
+            }} }},
+            {{ selector: 'edge', style: {{
+                'width': 'data(width)', 'line-color': '#4D5752', 'opacity': 0.55, 'curve-style': 'bezier'
+            }} }},
+            {{ selector: 'node[tipo = "termo"]:hover', style: {{ 'border-width': 4, 'border-color': '#E8A33D', 'font-size': 20, 'overlay-opacity': 0.4 }} }},
+            {{ selector: 'edge:hover', style: {{ 'line-color': '#E8A33D', 'opacity': 0.9 }} }},
+            {{ selector: '.dimmed', style: {{ 'opacity': 0.10, 'text-opacity': 0.10 }} }}
+        ],
+        layout: {{ name: 'preset' }}
     }});
 
-    const d = n.data();
-    n.style('label', d.label + '\\nMatérias: ' + d.freq + '\\nConexões: ' + d.grau + '\\nComunidade: ' + d.cluster_label);
-}});
+    // Entrada animada: tudo começa invisível, o layout calcula as posições em
+    // segundo plano, e só depois os elementos aparecem progressivamente.
+    cy.elements().style('opacity', 0);
 
-cy.on('mouseout', 'node[tipo = "termo"]', function(evt) {{
-    cy.batch(function() {{
-        cy.elements().removeClass('dimmed');
+    const opcoesLayout = fcoseDisponivel ? {{
+        name: 'fcose',
+        quality: 'proof',
+        animate: false,
+        randomize: true,
+        nodeSeparation: 90,
+        idealEdgeLength: 120,
+        nodeRepulsion: 8000,
+        nestingFactor: 0.4,
+        packComponents: true,
+        fit: false
+    }} : {{
+        name: 'cose',
+        animate: false,
+        randomize: true,
+        nodeRepulsion: 800000,
+        idealEdgeLength: 140,
+        edgeElasticity: 80,
+        gravity: 80,
+        numIter: 1000,
+        fit: false
+    }};
+
+    const layout = cy.layout(opcoesLayout);
+
+    layout.on('layoutstop', function() {{
+        cy.fit(undefined, 40);
+
+        const nosTermo = cy.nodes('[tipo = "termo"]');
+        const nosCluster = cy.nodes('[tipo = "cluster"]');
+
+        nosCluster.forEach(function(n) {{
+            n.animate({{ style: {{ opacity: 1 }} }}, {{ duration: 500, easing: 'ease-out' }});
+        }});
+
+        nosTermo.forEach(function(n, i) {{
+            n.delay(i * 22).animate({{ style: {{ opacity: 1 }} }}, {{ duration: 380, easing: 'ease-out' }});
+        }});
+
+        cy.edges().delay(nosTermo.length * 22 + 250).animate(
+            {{ style: {{ opacity: 0.55 }} }}, {{ duration: 500, easing: 'ease-out' }}
+        );
     }});
-    const n = evt.target;
-    n.style('label', n.data('label'));
-}});
-</script>
-"""
+
+    layout.run();
+
+    // Destaque por comunidade ao passar o mouse (spotlight): esmaece tudo
+    // que não pertence à mesma bolha do nó em foco.
+    cy.on('mouseover', 'node[tipo = "termo"]', function(evt) {{
+        const n = evt.target;
+        const parentId = n.data('parent');
+
+        let grupo = n.closedNeighborhood('node');
+        if (parentId) {{
+            grupo = cy.nodes('[parent = "' + parentId + '"]').union(cy.getElementById(parentId));
+        }}
+
+        const arestasInternas = grupo.connectedEdges().filter(function(e) {{
+            return grupo.contains(e.source()) && grupo.contains(e.target());
+        }});
+
+        const destaque = grupo.union(arestasInternas);
+
+        cy.batch(function() {{
+            cy.elements().addClass('dimmed');
+            destaque.removeClass('dimmed');
+        }});
+
+        const d = n.data();
+        n.style('label', d.label + '\\nMatérias: ' + d.freq + '\\nConexões: ' + d.grau + '\\nComunidade: ' + d.cluster_label);
+    }});
+
+    cy.on('mouseout', 'node[tipo = "termo"]', function(evt) {{
+        cy.batch(function() {{
+            cy.elements().removeClass('dimmed');
+        }});
+        const n = evt.target;
+        n.style('label', n.data('label'));
+    }});
+    </script>
+    """
 
 
-if secao_selecionada == "Rede semântica":
-    mostrar_periodo_no_topo(periodo_label_sidebar)
+    if secao_selecionada == "Rede semântica":
+        mostrar_periodo_no_topo(periodo_label_sidebar)
 
-    st.markdown(
-        f"### Rede semântica de palavras-chave "
-        f"{icone_ajuda('Grafo de coocorrência das palavras-chave extraídas por IA nas matérias do período filtrado — dois termos se conectam quando aparecem juntos na mesma matéria. Cores indicam comunidades detectadas automaticamente (algoritmo de Louvain). Atualiza dinamicamente com qualquer filtro.')}",
-        unsafe_allow_html=True
-    )
-
-    if not REDE_SEMANTICA_DISPONIVEL:
-        st.warning(
-            "A rede semântica não está disponível neste ambiente no momento."
+        st.markdown(
+            f"### Rede semântica de palavras-chave "
+            f"{icone_ajuda('Grafo de coocorrência das palavras-chave extraídas por IA nas matérias do período filtrado — dois termos se conectam quando aparecem juntos na mesma matéria. Cores indicam comunidades detectadas automaticamente (algoritmo de Louvain). Atualiza dinamicamente com qualquer filtro.')}",
+            unsafe_allow_html=True
         )
-    elif df_keywords is None:
-        st.info(
-            "A classificação por IA das matérias ainda não está disponível "
-            "para habilitar a rede semântica."
-        )
-    else:
-        top_clusters = st.slider(
-            "Quantidade de comunidades em destaque",
-            min_value=3, max_value=12, value=8,
-            key="top_clusters_rede"
+
+        st.caption(
+            "A rede semântica pode levar mais tempo para carregar, especialmente "
+            "em períodos com grande volume de matérias. Aguarde a conclusão do processamento."
         )
 
-        urls_filtradas_rede = set(df["URL"]) - {""}
-        kw_filtrado_rede = df_keywords[df_keywords["url"].isin(urls_filtradas_rede)]
-
-        if kw_filtrado_rede.empty:
+        if not REDE_SEMANTICA_DISPONIVEL:
+            st.warning(
+                "A rede semântica não está disponível neste ambiente no momento."
+            )
+        elif df_keywords is None:
             st.info(
-                "Nenhuma matéria do período/busca filtrados possui palavras-chave "
-                "extraídas. Amplie o filtro na barra lateral."
+                "A classificação por IA das matérias ainda não está disponível "
+                "para habilitar a rede semântica."
             )
         else:
-            listas_termos = tuple(
-                tuple(lista) for lista in kw_filtrado_rede["palavras_chave_lista"]
+            top_clusters = st.slider(
+                "Quantidade de comunidades em destaque",
+                min_value=3, max_value=12, value=8,
+                key="top_clusters_rede"
             )
 
-            elementos, legenda = construir_elementos_rede(listas_termos, top_clusters)
+            urls_filtradas_rede = set(df["URL"]) - {""}
+            kw_filtrado_rede = df_keywords[df_keywords["url"].isin(urls_filtradas_rede)]
 
-            if not elementos:
+            if kw_filtrado_rede.empty:
                 st.info(
-                    "Poucas coocorrências de palavras-chave no período filtrado para "
-                    "montar uma rede (os termos aparecem sozinhos ou só uma vez "
-                    "acompanhados). Amplie o período selecionado na barra lateral."
+                    "Nenhuma matéria do período/busca filtrados possui palavras-chave "
+                    "extraídas. Amplie o filtro na barra lateral."
                 )
             else:
-                periodo_label = (
-                    f"{df['date_dt'].min().strftime('%d/%m/%Y')} a "
-                    f"{df['date_dt'].max().strftime('%d/%m/%Y')}"
-                )
-                titulo_rede = (
-                    f"Rede semântica — {periodo_label} "
-                    f"({numero_br(len(kw_filtrado_rede))} matéria(s))"
+                listas_termos = tuple(
+                    tuple(lista) for lista in kw_filtrado_rede["palavras_chave_lista"]
                 )
 
-                html_rede = renderizar_rede_semantica_html(elementos, legenda, titulo_rede)
-                components.html(html_rede, height=760, scrolling=False)
+                elementos, legenda = construir_elementos_rede(listas_termos, top_clusters)
 
-                st.caption(
-                    f"{numero_br(len(elementos))} elemento(s) no grafo (nós + arestas) · "
-                    f"{numero_br(len(kw_filtrado_rede))} matéria(s) com palavras-chave no período."
-                )
+                if not elementos:
+                    st.info(
+                        "Poucas coocorrências de palavras-chave no período filtrado para "
+                        "montar uma rede (os termos aparecem sozinhos ou só uma vez "
+                        "acompanhados). Amplie o período selecionado na barra lateral."
+                    )
+                else:
+                    periodo_label = (
+                        f"{df['date_dt'].min().strftime('%d/%m/%Y')} a "
+                        f"{df['date_dt'].max().strftime('%d/%m/%Y')}"
+                    )
+                    titulo_rede = (
+                        f"Rede semântica — {periodo_label} "
+                        f"({numero_br(len(kw_filtrado_rede))} matéria(s))"
+                    )
+
+                    html_rede = renderizar_rede_semantica_html(elementos, legenda, titulo_rede)
+                    components.html(html_rede, height=760, scrolling=False)
+
+                    st.caption(
+                        f"{numero_br(len(elementos))} elemento(s) no grafo (nós + arestas) · "
+                        f"{numero_br(len(kw_filtrado_rede))} matéria(s) com palavras-chave no período."
+                    )
