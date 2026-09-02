@@ -26,11 +26,26 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("OBSERVATÓRIO DE CIÊNCIA NA MÍDIA")
-st.caption(
+# Título como botão (não st.title): funciona como link de volta pra home —
+# "Cobertura do dia" não tem mais botão no menu lateral (que agora é só
+# para explorar o histórico), então o único jeito de voltar pra ela depois
+# de navegar é clicando no título. O CSS mais abaixo (classe
+# st-key-home_titulo) remove a aparência de botão e deixa com cara de h1.
+if st.button(
+    "OBSERVATÓRIO DE CIÊNCIA NA MÍDIA",
+    key="home_titulo",
+    help="Voltar para Cobertura do dia"
+):
+    if st.session_state.get("secao_selecionada") != "Cobertura do dia":
+        st.session_state["secao_selecionada"] = "Cobertura do dia"
+        st.rerun()
+st.markdown(
+    '<div style="font-size:1.15rem;color:#92998F;margin-top:-6px;'
+    'margin-bottom:10px;">'
     "Acompanhamento diário e exploração histórica da cobertura de ciência "
-    "na mídia brasileira — combinando estatística, processamento de "
-    "linguagem natural e análise por inteligência artificial."
+    "na mídia brasileira."
+    "</div>",
+    unsafe_allow_html=True
 )
 
 
@@ -615,20 +630,10 @@ if data_mais_recente_str:
 
 
 # =========================
-# Navegação entre seções
+# Filtros — "Período" vem primeiro na sidebar, acima dos botões de
+# navegação (a pedido do usuário).
 # =========================
-# Fica no topo do conteúdo principal (não mais na sidebar), como o primeiro
-# elemento de fato interativo da página — a ideia é que "Cobertura do dia"
-# seja a primeira coisa que o usuário veja e entenda, com as demais seções
-# visíveis logo ao lado, não escondidas atrás de um menu lateral.
-#
-# Implementado com st.button() em vez de st.tabs() de propósito: st.tabs()
-# renderiza o conteúdo de TODAS as abas a cada execução do script (só
-# esconde visualmente as inativas), o que rodaria a lógica pesada de todas
-# as 5 seções a cada interação. Com botões + session_state, só o código da
-# seção realmente selecionada roda — mesmo comportamento de performance que
-# o st.sidebar.radio() de antes.
-SECOES = ["Cobertura do dia", "Visão geral", "Temas", "Sismógrafo", "Rede semântica"]
+SECOES = ["Cobertura do dia", "Visão geral", "Temas", "Atores", "Sismógrafo", "Rede semântica"]
 
 # key= de um widget vira uma classe CSS (st-key-<chave>), usada mais abaixo
 # para estilizar os botões de navegação sem afetar outros botões do app.
@@ -638,6 +643,7 @@ SECOES_SLUG = {
     "Cobertura do dia": "cobertura-dia",
     "Visão geral": "visao-geral",
     "Temas": "temas",
+    "Atores": "atores",
     "Sismógrafo": "sismografo",
     "Rede semântica": "rede-semantica",
 }
@@ -645,35 +651,10 @@ SECOES_SLUG = {
 if "secao_selecionada" not in st.session_state:
     st.session_state["secao_selecionada"] = SECOES[0]
 
-secao_antes_do_clique = st.session_state["secao_selecionada"]
-
-cols_nav = st.columns(len(SECOES))
-for col_nav, nome_secao in zip(cols_nav, SECOES):
-    with col_nav:
-        ativo = st.session_state["secao_selecionada"] == nome_secao
-        if st.button(
-            nome_secao,
-            key=f"nav_{SECOES_SLUG[nome_secao]}",
-            use_container_width=True,
-            type="primary" if ativo else "secondary"
-        ):
-            st.session_state["secao_selecionada"] = nome_secao
-
-# Se o clique mudou a seção, força uma nova execução: sem isso, o botão
-# recém-clicado só apareceria destacado (type="primary") na PRÓXIMA
-# interação, não na atual — porque o "ativo" de cada botão é calculado
-# antes do clique daquele mesmo botão ser processado, dentro do mesmo loop.
-if st.session_state["secao_selecionada"] != secao_antes_do_clique:
-    st.rerun()
-
+# Lido já aqui (antes dos botões de navegação, mais abaixo) porque o filtro
+# de Período precisa saber qual seção está ativa pra decidir se deve se
+# esconder (ver "Cobertura do dia" logo adiante).
 secao_selecionada = st.session_state["secao_selecionada"]
-
-st.divider()
-
-
-# =========================
-# Filtros
-# =========================
 
 st.sidebar.header("Explorar")
 st.sidebar.subheader("Período")
@@ -681,13 +662,32 @@ st.sidebar.subheader("Período")
 data_min = df["date_dt"].min().date()
 data_max = df["date_dt"].max().date()
 
+if "periodo_filtro" not in st.session_state:
+    st.session_state["periodo_filtro"] = (data_min, data_max)
+
+# O filtro de período não tem efeito nenhum em "Cobertura do dia" (ver
+# comentário mais abaixo, junto de SECOES_COM_AGRUPAMENTO_TEMPORAL) — mas o
+# calendário fica sempre visível na sidebar (desabilitado nessa seção, não
+# escondido), porque escondê-lo dava a impressão de que o filtro tinha
+# sumido do app. O valor selecionado fica guardado em session_state
+# (key="periodo_filtro") e volta a valer assim que o usuário troca de seção.
+periodo_desabilitado = secao_selecionada == "Cobertura do dia"
+
 periodo_selecionado = st.sidebar.date_input(
     "Intervalo de datas",
-    value=(data_min, data_max),
     min_value=data_min,
     max_value=data_max,
-    format="DD/MM/YYYY"
+    format="DD/MM/YYYY",
+    key="periodo_filtro",
+    disabled=periodo_desabilitado
 )
+
+if periodo_desabilitado:
+    st.sidebar.caption(
+        "Desabilitado nesta seção — \"Cobertura do dia\" sempre mostra hoje "
+        "e os últimos 30 dias, não depende do período selecionado. Troque "
+        "de seção para explorar outros períodos."
+    )
 
 # st.date_input com range pode retornar 1 ou 2 datas dependendo do estado da seleção
 if isinstance(periodo_selecionado, tuple) and len(periodo_selecionado) == 2:
@@ -700,6 +700,46 @@ if isinstance(periodo_selecionado, tuple) and len(periodo_selecionado) == 2:
 else:
     st.sidebar.info("Selecione a data final para aplicar o filtro de período.")
     periodo_label_sidebar = "período incompleto"
+
+st.sidebar.divider()
+
+
+# =========================
+# Navegação entre seções
+# =========================
+# No menu lateral, abaixo do filtro de Período — a página principal mostra
+# só o conteúdo da seção selecionada, sem barra de botões no topo do
+# conteúdo. "Cobertura do dia" não entra nesta lista de botões: ela é a
+# home do app (SECOES[0]), acessada pelo título clicável no topo da página
+# principal, não por um botão de exploração — o menu lateral serve só pra
+# navegar pelo conteúdo histórico.
+#
+# Implementado com st.sidebar.button() em vez de st.tabs() de propósito:
+# st.tabs() renderiza o conteúdo de TODAS as abas a cada execução do script
+# (só esconde visualmente as inativas), o que rodaria a lógica pesada de
+# todas as 5 seções a cada interação. Com botões + session_state, só o
+# código da seção realmente selecionada roda.
+secao_antes_do_clique = secao_selecionada
+
+st.sidebar.header("Navegar")
+for nome_secao in SECOES[1:]:
+    ativo = secao_selecionada == nome_secao
+    if st.sidebar.button(
+        nome_secao,
+        key=f"nav_{SECOES_SLUG[nome_secao]}",
+        use_container_width=True,
+        type="primary" if ativo else "secondary"
+    ):
+        st.session_state["secao_selecionada"] = nome_secao
+
+# Se o clique mudou a seção, força uma nova execução: sem isso, o botão
+# recém-clicado só apareceria destacado (type="primary") na PRÓXIMA
+# interação, não na atual — e o filtro de Período (acima) ficaria com a
+# seção antiga, já que foi lido antes deste bloco.
+if st.session_state["secao_selecionada"] != secao_antes_do_clique:
+    st.rerun()
+
+st.sidebar.divider()
 
 veiculos_disponiveis = sorted(df_original["Veículo"].unique())
 
@@ -735,51 +775,15 @@ else:
     # seções (só existe para a variável não ficar indefinida).
     escala = "Dia"
 
-st.sidebar.caption(
-    "\"Cobertura do dia\" sempre traz um resumo do dia mais recente no topo, além da "
-    "análise do período selecionado aqui ao lado. As demais seções usam o "
-    "período e a escala selecionados."
-)
-
 st.sidebar.subheader("Busca")
 
 if "busca_lateral" not in st.session_state:
     st.session_state["busca_lateral"] = ""
 
-
-def _preencher_busca(termo):
-    st.session_state["busca_lateral"] = termo
-
-
 busca = st.sidebar.text_input(
     "Buscar palavra no título ou texto",
     key="busca_lateral"
 )
-
-
-@st.cache_data
-def termos_populares_corpus(top_n=8):
-    """Termos mais frequentes de todo o corpus (não filtrado), usados
-    como sugestões rápidas de busca."""
-    textos = tuple((df_original["Título"] + " " + df_original["Texto"]).tolist())
-    termos_df = contar_termos(textos, n=1, top_n=top_n)
-    return termos_df["Termo"].tolist()
-
-
-termos_chips = termos_populares_corpus(8)
-
-if termos_chips:
-    st.sidebar.caption("Termos em alta no corpus")
-    col_chips = st.sidebar.columns(2)
-    for i, termo in enumerate(termos_chips):
-        with col_chips[i % 2]:
-            st.button(
-                termo,
-                key=f"chip_{termo}",
-                on_click=_preencher_busca,
-                args=(termo,),
-                use_container_width=True
-            )
 
 if busca:
     busca_lower = busca.lower()
@@ -895,6 +899,86 @@ def avisar_se_amostra_pequena(n_materias, contexto="esta classificação"):
             "leia os rankings abaixo com cautela."
         )
 
+def renderizar_bloco_classificacao(df_base, contexto_rotulo, dimensoes=None):
+    """Renderiza os cards de Enquadramentos, Áreas, Instituições, Pessoas e
+    Abrangência predominantes, a partir de df_base — já recortado pelo
+    chamador (hoje, em "Cobertura do dia"; período da sidebar, em "Temas"
+    e "Atores"). contexto_rotulo aparece nos avisos de amostra pequena/
+    nenhuma classificação disponível (ex.: "hoje", "o período selecionado"),
+    pra cada chamada falar da fatia de dados que de fato está mostrando.
+
+    dimensoes: quais cards mostrar, como subconjunto de {"enquadramentos",
+    "areas", "instituicoes", "pessoas", "abrangencia"}. None (padrão) =
+    todos os 5 — usado pela home ("Cobertura do dia"). "Temas" pede só
+    {"enquadramentos", "areas"}; "Atores" pede o restante."""
+    if dimensoes is None:
+        dimensoes = {"enquadramentos", "areas", "instituicoes", "pessoas", "abrangencia"}
+
+    if df_keywords is None:
+        st.warning(
+            "A classificação por IA das matérias ainda não está disponível "
+            "para habilitar esta seção."
+        )
+        return
+
+    urls_filtradas_ia = set(df_base["URL"]) - {""}
+    df_com_keywords = df_base[df_base["URL"].isin(urls_filtradas_ia)].merge(
+        df_keywords[[
+            "url", "frame_predominante", "area", "abrangencia",
+            "instituicoes_lista", "pessoas_lista"
+        ]],
+        left_on="URL", right_on="url", how="inner"
+    )
+    resultado_classificacao = agregar_classificacoes_materias(df_com_keywords)
+
+    if not resultado_classificacao:
+        st.warning(
+            f"Nenhuma matéria de {contexto_rotulo}, com o filtro de veículo/busca "
+            "atual, possui classificação de IA ainda."
+        )
+        return
+
+    rotulo_veiculo = (
+        "todos os veículos" if len(veiculos_selecionados) == len(veiculos_disponiveis)
+        else f"{len(veiculos_selecionados)} veículo(s) selecionado(s)"
+    )
+    st.caption(
+        f"{numero_br(resultado_classificacao['n_materias'])} matéria(s) "
+        f"classificada(s) em {contexto_rotulo} ({rotulo_veiculo})."
+    )
+    avisar_se_amostra_pequena(resultado_classificacao["n_materias"], contexto_rotulo)
+
+    # Ordem de leitura fixa; cada card só entra se estiver em "dimensoes".
+    # A lista filtrada é dividida ao meio entre as duas colunas — com os 5
+    # cards da home isso reproduz exatamente o layout original (2+2, mais
+    # abrangência abaixo); com só 2 cards (Temas) ou 2+abrangência (Atores),
+    # fica lado a lado em vez de empilhado numa coluna só com a outra vazia.
+    ORDEM_DIMENSOES = [
+        ("enquadramentos", "Enquadramentos predominantes", "enquadramentos_predominantes"),
+        ("areas", "Áreas predominantes", "areas_predominantes"),
+        ("instituicoes", "Instituições mais visíveis", "instituicoes_mais_visiveis"),
+        ("pessoas", "Pessoas mais visíveis", "pessoas_mais_visiveis"),
+    ]
+    itens_a_mostrar = [item for item in ORDEM_DIMENSOES if item[0] in dimensoes]
+
+    if itens_a_mostrar:
+        meio = (len(itens_a_mostrar) + 1) // 2
+        col1, col2 = st.columns(2)
+        with col1:
+            for _, titulo, campo in itens_a_mostrar[:meio]:
+                card_ranking(titulo, resultado_classificacao[campo], "")
+        with col2:
+            for _, titulo, campo in itens_a_mostrar[meio:]:
+                card_ranking(titulo, resultado_classificacao[campo], "")
+
+    if "abrangencia" in dimensoes:
+        card(
+            "Abrangência predominante",
+            [resultado_classificacao["abrangencia_predominante"]],
+            ""
+        )
+
+
 
 def mostrar_periodo_no_topo(periodo_label, escala_label=None):
     """Exibe um indicador fixo no topo da seção com o período selecionado
@@ -948,7 +1032,7 @@ st.markdown(
         }}
     }}
 
-    /* Navegação entre seções (botões no topo do conteúdo). O seletor por
+    /* Navegação entre seções (botões no menu lateral). O seletor por
        substring pega qualquer botão cuja key comece com "nav_", sem
        precisar listar cada seção individualmente nem afetar outros
        botões do app (ex: "Sortear outras", "Gerar síntese"). */
@@ -962,6 +1046,31 @@ st.markdown(
     [class*="st-key-nav_"] button:hover {{
         transform: translateY(-1px);
         filter: brightness(1.08);
+    }}
+
+    /* Título clicável (volta pra "Cobertura do dia"): st.button() estilizado
+       pra parecer um h1 comum, sem rastro de botão (fundo, borda, padding).
+       Cursor/hover deixam claro que é clicável sem gritar "botão". */
+    [class*="st-key-home_titulo"] button {{
+        background: transparent !important;
+        border: none !important;
+        padding: 0 !important;
+        margin: 0 !important;
+        box-shadow: none !important;
+        font-size: 2.25rem !important;
+        font-weight: 700 !important;
+        line-height: 1.2 !important;
+        color: var(--obs-paper) !important;
+        text-align: left !important;
+        justify-content: flex-start !important;
+        cursor: pointer;
+        transition: color 0.15s ease;
+    }}
+    [class*="st-key-home_titulo"] button:hover {{
+        color: var(--obs-teal) !important;
+    }}
+    [class*="st-key-home_titulo"] button:focus:not(:active) {{
+        box-shadow: none !important;
     }}
 
     /* Superfícies nativas do Streamlit: força a mesma paleta usada pelos
@@ -1605,14 +1714,16 @@ if secao_selecionada == "Visão geral":
             hide_index=True
         )
 
+    st.divider()
+
 
 if secao_selecionada == "Temas":
     mostrar_periodo_no_topo(periodo_label_sidebar, escala)
 
     st.markdown('<div class="painel-eyebrow">Temas</div>', unsafe_allow_html=True)
-    with st.expander("Como ler esta seção (4 formas diferentes de medir o mesmo assunto)"):
+    with st.expander("Como ler esta seção (5 formas diferentes de medir o mesmo assunto)"):
         st.markdown(
-            "Esta seção reúne 4 formas diferentes de responder \"do que a mídia "
+            "Esta seção reúne 5 formas diferentes de responder \"do que a mídia "
             "está falando\", cada uma com um método distinto — elas vão discordar "
             "entre si às vezes, porque medem coisas diferentes.\n\n"
             "- **Palavras-chave (IA)** captam *conceito* — a IA lê cada matéria e "
@@ -1624,8 +1735,20 @@ if secao_selecionada == "Temas":
             "literal* de texto — mais bruto, sem julgamento de relevância, mas "
             "não depende de IA.\n"
             "- **Animações por mês** mostram qualquer uma das anteriores "
-            "evoluindo no tempo."
+            "evoluindo no tempo.\n"
+            "- **Enquadramentos e áreas** captam *categoria* — a IA classifica "
+            "cada matéria numa lista fixa de opções, em vez de extrair termos "
+            "livres."
         )
+
+    st.markdown(
+        f"### Enquadramentos e áreas do período "
+        f"{icone_ajuda('Agregados a partir da classificação já feita por matéria, no período/veículo/busca selecionados na barra lateral — filtrar aqui não tem custo adicional de IA.')}",
+        unsafe_allow_html=True
+    )
+    renderizar_bloco_classificacao(df, "o período selecionado", dimensoes={"enquadramentos", "areas"})
+
+    st.divider()
 
     if df_keywords is not None:
         st.markdown(
@@ -2237,33 +2360,104 @@ if secao_selecionada == "Temas":
                 "extraídas com dados de mês suficientes para animar."
             )
 
-
-if secao_selecionada == "Sismógrafo":
-    mostrar_periodo_no_topo(periodo_label_sidebar, escala)
+    st.divider()
 
     st.markdown(
-        f"### Sismógrafo de cobertura "
-        f"{icone_ajuda('Detecta automaticamente os picos de publicação no período filtrado e transforma cada um em um boletim — a matéria mais representativa daquele momento.')}",
+        f"### Tendência do período "
+        f"{icone_ajuda('Texto corrido, gerado por dia×veículo — não dá para agregar por contagem como os outros campos. A síntese abaixo usa 1 chamada de IA sob demanda, aproveitando só as frases diárias já existentes.')}",
         unsafe_allow_html=True
     )
 
-    n_eventos = st.slider(
-        "Quantidade de picos a destacar",
-        min_value=4, max_value=15, value=8,
-        key="n_eventos_sismografo"
+    datas_no_filtro = set(df["Data"].unique())
+    resultado_tendencia_periodo = agregar_analises_periodo(
+        analises_diarias, datas_no_filtro, veiculos_no_filtro=veiculos_selecionados
     )
+
+    if not resultado_tendencia_periodo:
+        st.info(
+            "Nenhuma tendência disponível ainda para os dias/veículos deste período."
+        )
+    else:
+        chave_periodo = tuple(resultado_tendencia_periodo["tendencias_diarias"])
+
+        if st.button("Gerar síntese do período", key="btn_sintese_periodo"):
+            with st.spinner("Sintetizando tendência do período..."):
+                try:
+                    texto_sintese = sintetizar_tendencia_periodo(
+                        resultado_tendencia_periodo["tendencias_diarias"]
+                    )
+                    st.session_state["sintese_periodo_texto"] = texto_sintese
+                    st.session_state["sintese_periodo_chave"] = chave_periodo
+                except Exception as e:
+                    st.error(f"Não foi possível gerar a síntese: {e}")
+
+        sintese_valida = (
+            st.session_state.get("sintese_periodo_chave") == chave_periodo
+            and st.session_state.get("sintese_periodo_texto")
+        )
+
+        if sintese_valida:
+            st.info(st.session_state["sintese_periodo_texto"])
+        else:
+            with st.expander("Ver frases diárias sem sintetizar"):
+                for data_item, veiculo_item, texto_item in resultado_tendencia_periodo["tendencias_diarias"]:
+                    st.write(f"**{data_item}** ({veiculo_item}) — {texto_item}")
+
+
+def renderizar_secao_sismografo(
+    prefixo_chave,
+    df_sismografo=None,
+    escala_sismografo=None,
+    mostrar_slider=True,
+    n_eventos_fixo=6,
+    mostrar_gauge_ritmo=True,
+):
+    """Renderiza o widget do sismógrafo (detecção de picos de publicação +
+    boletim animado) e, opcionalmente, o gauge de ritmo do período.
+
+    Reutilizado por duas chamadas bem diferentes:
+    - seção "Sismógrafo" (exploração histórica completa): usa o df e a
+      escala vigentes na sidebar, slider de quantidade de picos, e mostra o
+      gauge de ritmo do período filtrado.
+    - "Cobertura do dia" (visão geral compacta): recebe df_sismografo já
+      restrito a uma janela fixa recente (últimos 30 dias, independente do
+      filtro de período da sidebar), escala fixa em "Dia", sem slider (um
+      número fixo de picos) e sem o gauge — que apareceria duplicado ali
+      (Parte 1 já mostra "Ritmo de publicação (hoje)").
+
+    df_sismografo/escala_sismografo caem para o df/escala globais da
+    sidebar quando não informados (comportamento da chamada histórica).
+    prefixo_chave evita colisão de key entre os dois widgets de slider."""
+    df_sismografo = df if df_sismografo is None else df_sismografo
+    escala_sismografo = escala if escala_sismografo is None else escala_sismografo
+
+    st.markdown(
+        f"### Sismógrafo de cobertura "
+        f"{icone_ajuda('Detecta automaticamente os picos de publicação no período em questão e transforma cada um em um boletim — a matéria mais representativa daquele momento.')}",
+        unsafe_allow_html=True
+    )
+
+    if mostrar_slider:
+        n_eventos = st.slider(
+            "Quantidade de picos a destacar",
+            min_value=4, max_value=15, value=8,
+            key=f"n_eventos_sismografo_{prefixo_chave}"
+        )
+    else:
+        n_eventos = n_eventos_fixo
 
     MAPA_COL_ESCALA = {"Dia": "date_dt", "Mês": "mes_dt", "Ano": "ano_dt"}
 
     @st.cache_data
-    def detectar_eventos_destaque(chave_cache, escala_evt, n_eventos_evt):
+    def detectar_eventos_destaque(chave_cache, _df_evt, escala_evt, n_eventos_evt):
         """Identifica picos estatísticos de cobertura (contagem acima de
         média + 1 desvio-padrão) e extrai, para cada pico, a matéria mais
         longa publicada naquele período como 'manchete' representativa.
 
         chave_cache serve apenas para invalidar o cache quando o df
-        filtrado mudar (DataFrames não são hashable)."""
-        serie = agrupar_por_escala(df, escala_evt)
+        filtrado mudar (DataFrames não são hashable — por isso _df_evt leva
+        underscore, pra o Streamlit não tentar fazer hash dele direto)."""
+        serie = agrupar_por_escala(_df_evt, escala_evt)
 
         if len(serie) < 2:
             return []
@@ -2299,7 +2493,7 @@ if secao_selecionada == "Sismógrafo":
                 fim_p = periodo_dt + pd.offsets.YearBegin(1)
                 rotulo = periodo_dt.strftime("%Y")
 
-            grupo = df[(df[col_dt] >= inicio_p) & (df[col_dt] < fim_p)]
+            grupo = _df_evt[(_df_evt[col_dt] >= inicio_p) & (_df_evt[col_dt] < fim_p)]
             if grupo.empty:
                 continue
 
@@ -2324,9 +2518,11 @@ if secao_selecionada == "Sismógrafo":
         eventos.sort(key=lambda e: e["data_ordenacao"])
         return eventos
 
-    chave_cache_sismografo = (len(df), df["date_dt"].min(), df["date_dt"].max())
+    chave_cache_sismografo = (
+        len(df_sismografo), df_sismografo["date_dt"].min(), df_sismografo["date_dt"].max()
+    )
     eventos_destaque = detectar_eventos_destaque(
-        chave_cache_sismografo, escala, n_eventos
+        chave_cache_sismografo, df_sismografo, escala_sismografo, n_eventos
     )
 
     if len(eventos_destaque) < 2:
@@ -2612,16 +2808,35 @@ if secao_selecionada == "Sismógrafo":
             "Barras em âmbar indicam o maior pico do período filtrado."
         )
 
-    renderizar_gauge_ritmo(
-        "Ritmo de publicação (período selecionado)",
-        "Período filtrado",
-        ritmo_atual, ritmo_historico, razao_temperatura
+    if mostrar_gauge_ritmo:
+        renderizar_gauge_ritmo(
+            "Ritmo de publicação (período selecionado)",
+            "Período filtrado",
+            ritmo_atual, ritmo_historico, razao_temperatura
+        )
+
+
+if secao_selecionada == "Atores":
+    mostrar_periodo_no_topo(periodo_label_sidebar)
+    st.markdown('<div class="painel-eyebrow">Atores</div>', unsafe_allow_html=True)
+    st.markdown(
+        f"### Instituições, pessoas e abrangência do período "
+        f"{icone_ajuda('Agregados a partir da classificação já feita por matéria, no período/veículo/busca selecionados na barra lateral — filtrar aqui não tem custo adicional de IA.')}",
+        unsafe_allow_html=True
     )
+    renderizar_bloco_classificacao(
+        df, "o período selecionado",
+        dimensoes={"instituicoes", "pessoas", "abrangencia"}
+    )
+
+
+if secao_selecionada == "Sismógrafo":
+    mostrar_periodo_no_topo(periodo_label_sidebar, escala)
+    renderizar_secao_sismografo("sismografo")
 
 
 if secao_selecionada == "Cobertura do dia":
     st.markdown('<div class="painel-eyebrow">Cobertura do dia</div>', unsafe_allow_html=True)
-    st.subheader("Análise estruturada por IA")
 
     # =========================
     # Parte 1: pulso de hoje — compacto, sempre o dia mais recente do
@@ -2630,8 +2845,7 @@ if secao_selecionada == "Cobertura do dia":
     st.markdown(f"#### Hoje — {data_mais_recente_str}")
     st.caption(
         f"{numero_br(n_materias_hoje)} matéria(s) publicadas em {data_mais_recente_str} "
-        f"({nome_dia_semana_hoje}, todos os veículos). Este resumo sempre mostra o dia "
-        "mais recente do dataset."
+        f"({nome_dia_semana_hoje}, todos os veículos)."
     )
 
     renderizar_gauge_ritmo(
@@ -2639,13 +2853,6 @@ if secao_selecionada == "Cobertura do dia":
         f"Hoje ({nome_dia_semana_hoje})",
         n_materias_hoje, ritmo_historico_dia_semana_hoje, razao_dia,
         rotulo_historico=f"Histórico de {nome_dia_semana_hoje}s"
-    )
-    st.markdown(
-        f'<span style="font-size:0.85rem;color:#92998F;">Comparado à média histórica '
-        f'de <b>{nome_dia_semana_hoje}s</b> especificamente '
-        f'({ritmo_historico_dia_semana_hoje:.1f} matéria(s)/dia)</span> '
-        f'{icone_ajuda("Não a média geral do corpus — mídia costuma publicar menos ciência aos fins de semana, então comparar contra a média geral penalizaria domingos e sábados injustamente.")}',
-        unsafe_allow_html=True
     )
 
     if resultado_tendencia_hoje:
@@ -2772,121 +2979,47 @@ if secao_selecionada == "Cobertura do dia":
     st.divider()
 
     # =========================
-    # Parte 2: análise do período selecionado na barra lateral.
+    # Parte 2: sismógrafo compacto — janela fixa de 30 dias terminando
+    # hoje, independente do filtro de período da sidebar (que fica
+    # escondido nesta seção — ver bloco "Período" na sidebar).
     # =========================
-    mostrar_periodo_no_topo(periodo_label_sidebar)
-    st.markdown(
-        f"#### Análise do período selecionado "
-        f"{icone_ajuda('Enquadramento, área, abrangência, instituições e pessoas são agregados a partir da classificação já feita por matéria — filtrar aqui não tem custo adicional de IA. Só a tendência do período e a síntese abaixo usam uma chamada de IA nova (sob demanda).')}",
-        unsafe_allow_html=True
+    janela_sismografo_dia = data_mais_recente_dt - pd.Timedelta(days=30) if pd.notna(data_mais_recente_dt) else None
+    df_janela_recente = (
+        df_original[
+            (df_original["date_dt"] > janela_sismografo_dia)
+            & (df_original["date_dt"] <= data_mais_recente_dt)
+            & (df_original["Veículo"].isin(veiculos_selecionados))
+        ]
+        if janela_sismografo_dia is not None else df_original.iloc[0:0]
     )
 
-    if df_keywords is None:
-        st.warning(
-            "A classificação por IA das matérias ainda não está disponível "
-            "para habilitar esta seção."
+    if len(df_janela_recente) > 0:
+        renderizar_secao_sismografo(
+            "cobertura_dia",
+            df_sismografo=df_janela_recente,
+            escala_sismografo="Dia",
+            mostrar_slider=False,
+            n_eventos_fixo=6,
+            mostrar_gauge_ritmo=False,
         )
+        st.caption("Últimos 30 dias, até hoje — não depende do período selecionado na barra lateral.")
     else:
-        urls_filtradas_ia = set(df["URL"]) - {""}
-        df_periodo_com_keywords = df[df["URL"].isin(urls_filtradas_ia)].merge(
-            df_keywords[[
-                "url", "frame_predominante", "area", "abrangencia",
-                "instituicoes_lista", "pessoas_lista"
-            ]],
-            left_on="URL", right_on="url", how="inner"
+        st.info(
+            "Sem matérias suficientes nos últimos 30 dias, com o filtro de "
+            "veículo atual, para montar o sismógrafo."
         )
-        resultado_classificacao = agregar_classificacoes_materias(df_periodo_com_keywords)
-
-        if not resultado_classificacao:
-            st.warning(
-                "Nenhuma matéria do período/busca/veículo filtrados possui "
-                "classificação de IA ainda."
-            )
-        else:
-            rotulo_veiculo = (
-                "todos os veículos" if len(veiculos_selecionados) == len(veiculos_disponiveis)
-                else f"{len(veiculos_selecionados)} veículo(s) selecionado(s)"
-            )
-            st.caption(
-                f"{numero_br(resultado_classificacao['n_materias'])} matéria(s) "
-                f"classificada(s) no período ({rotulo_veiculo})."
-            )
-            avisar_se_amostra_pequena(resultado_classificacao["n_materias"], "o período selecionado")
-
-            col1, col2 = st.columns(2)
-
-            with col1:
-                card_ranking(
-                    "Enquadramentos predominantes",
-                    resultado_classificacao["enquadramentos_predominantes"],
-                    ""
-                )
-                card_ranking(
-                    "Áreas predominantes",
-                    resultado_classificacao["areas_predominantes"],
-                    ""
-                )
-
-            with col2:
-                card_ranking(
-                    "Instituições mais visíveis",
-                    resultado_classificacao["instituicoes_mais_visiveis"],
-                    ""
-                )
-                card_ranking(
-                    "Pessoas mais visíveis",
-                    resultado_classificacao["pessoas_mais_visiveis"],
-                    ""
-                )
-
-            card(
-                "Abrangência predominante",
-                [resultado_classificacao["abrangencia_predominante"]],
-                ""
-            )
 
     st.divider()
 
+    # =========================
+    # Parte 3: classificação por IA — só das matérias de hoje.
+    # =========================
     st.markdown(
-        f"### Tendência do período "
-        f"{icone_ajuda('Texto corrido, gerado por dia×veículo — não dá para agregar por contagem como os outros campos. A síntese abaixo usa 1 chamada de IA sob demanda, aproveitando só as frases diárias já existentes.')}",
+        f"#### Enquadramento, temas e atores de hoje "
+        f"{icone_ajuda('Agregados a partir da classificação já feita por matéria, restrita ao dia mais recente do dataset — filtrar aqui não tem custo adicional de IA.')}",
         unsafe_allow_html=True
     )
-
-    datas_no_filtro = set(df["Data"].unique())
-    resultado_tendencia_periodo = agregar_analises_periodo(
-        analises_diarias, datas_no_filtro, veiculos_no_filtro=veiculos_selecionados
-    )
-
-    if not resultado_tendencia_periodo:
-        st.info(
-            "Nenhuma tendência disponível ainda para os dias/veículos deste período."
-        )
-    else:
-        chave_periodo = tuple(resultado_tendencia_periodo["tendencias_diarias"])
-
-        if st.button("Gerar síntese do período", key="btn_sintese_periodo"):
-            with st.spinner("Sintetizando tendência do período..."):
-                try:
-                    texto_sintese = sintetizar_tendencia_periodo(
-                        resultado_tendencia_periodo["tendencias_diarias"]
-                    )
-                    st.session_state["sintese_periodo_texto"] = texto_sintese
-                    st.session_state["sintese_periodo_chave"] = chave_periodo
-                except Exception as e:
-                    st.error(f"Não foi possível gerar a síntese: {e}")
-
-        sintese_valida = (
-            st.session_state.get("sintese_periodo_chave") == chave_periodo
-            and st.session_state.get("sintese_periodo_texto")
-        )
-
-        if sintese_valida:
-            st.info(st.session_state["sintese_periodo_texto"])
-        else:
-            with st.expander("Ver frases diárias sem sintetizar"):
-                for data_item, veiculo_item, texto_item in resultado_tendencia_periodo["tendencias_diarias"]:
-                    st.write(f"**{data_item}** ({veiculo_item}) — {texto_item}")
+    renderizar_bloco_classificacao(df_hoje_filtrado, "hoje")
 
 
 @st.cache_data
