@@ -656,8 +656,8 @@ if "secao_selecionada" not in st.session_state:
 # esconder (ver "Cobertura do dia" logo adiante).
 secao_selecionada = st.session_state["secao_selecionada"]
 
-st.sidebar.header("Explorar")
-st.sidebar.subheader("Período")
+st.sidebar.header("EXPLORAR")
+st.sidebar.subheader("Selecione um período")
 
 data_min = df["date_dt"].min().date()
 data_max = df["date_dt"].max().date()
@@ -674,20 +674,14 @@ if "periodo_filtro" not in st.session_state:
 periodo_desabilitado = secao_selecionada == "Cobertura do dia"
 
 periodo_selecionado = st.sidebar.date_input(
-    "Intervalo de datas",
+    "Selecione um período",
     min_value=data_min,
     max_value=data_max,
     format="DD/MM/YYYY",
     key="periodo_filtro",
-    disabled=periodo_desabilitado
+    disabled=periodo_desabilitado,
+    label_visibility="collapsed"
 )
-
-if periodo_desabilitado:
-    st.sidebar.caption(
-        "Desabilitado nesta seção — \"Cobertura do dia\" sempre mostra hoje "
-        "e os últimos 30 dias, não depende do período selecionado. Troque "
-        "de seção para explorar outros períodos."
-    )
 
 # st.date_input com range pode retornar 1 ou 2 datas dependendo do estado da seleção
 if isinstance(periodo_selecionado, tuple) and len(periodo_selecionado) == 2:
@@ -700,6 +694,25 @@ if isinstance(periodo_selecionado, tuple) and len(periodo_selecionado) == 2:
 else:
     st.sidebar.info("Selecione a data final para aplicar o filtro de período.")
     periodo_label_sidebar = "período incompleto"
+
+veiculos_disponiveis = sorted(df_original["Veículo"].unique())
+
+if len(veiculos_disponiveis) > 1:
+    st.sidebar.subheader("Filtrar por veículo")
+    veiculos_selecionados = st.sidebar.multiselect(
+        "Filtrar por veículo",
+        veiculos_disponiveis,
+        default=veiculos_disponiveis,
+        key="veiculos_selecionados",
+        label_visibility="collapsed"
+    )
+    if veiculos_selecionados:
+        df = df[df["Veículo"].isin(veiculos_selecionados)]
+    else:
+        st.sidebar.warning("Nenhum veículo selecionado — mostrando todos.")
+        veiculos_selecionados = veiculos_disponiveis
+else:
+    veiculos_selecionados = veiculos_disponiveis
 
 st.sidebar.divider()
 
@@ -740,24 +753,6 @@ if st.session_state["secao_selecionada"] != secao_antes_do_clique:
     st.rerun()
 
 st.sidebar.divider()
-
-veiculos_disponiveis = sorted(df_original["Veículo"].unique())
-
-if len(veiculos_disponiveis) > 1:
-    st.sidebar.subheader("Veículo")
-    veiculos_selecionados = st.sidebar.multiselect(
-        "Filtrar por veículo",
-        veiculos_disponiveis,
-        default=veiculos_disponiveis,
-        key="veiculos_selecionados"
-    )
-    if veiculos_selecionados:
-        df = df[df["Veículo"].isin(veiculos_selecionados)]
-    else:
-        st.sidebar.warning("Nenhum veículo selecionado — mostrando todos.")
-        veiculos_selecionados = veiculos_disponiveis
-else:
-    veiculos_selecionados = veiculos_disponiveis
 
 SECOES_COM_AGRUPAMENTO_TEMPORAL = {"Visão geral", "Temas", "Sismógrafo"}
 
@@ -1057,8 +1052,9 @@ st.markdown(
         padding: 0 !important;
         margin: 0 !important;
         box-shadow: none !important;
-        font-size: 2.25rem !important;
-        font-weight: 700 !important;
+        font-size: clamp(2.8rem, 5vw, 4.3rem) !important;
+        font-weight: 800 !important;
+        letter-spacing: -0.045em !important;
         line-height: 1.2 !important;
         color: var(--obs-paper) !important;
         text-align: left !important;
@@ -2411,6 +2407,8 @@ def renderizar_secao_sismografo(
     mostrar_slider=True,
     n_eventos_fixo=6,
     mostrar_gauge_ritmo=True,
+    texto_ajuda=None,
+    mostrar_instrucoes=True,
 ):
     """Renderiza o widget do sismógrafo (detecção de picos de publicação +
     boletim animado) e, opcionalmente, o gauge de ritmo do período.
@@ -2431,9 +2429,14 @@ def renderizar_secao_sismografo(
     df_sismografo = df if df_sismografo is None else df_sismografo
     escala_sismografo = escala if escala_sismografo is None else escala_sismografo
 
+    if texto_ajuda is None:
+        texto_ajuda = (
+            "Detecta automaticamente os picos de publicação no período em questão "
+            "e transforma cada um em um boletim — a matéria mais representativa daquele momento."
+        )
+
     st.markdown(
-        f"### Sismógrafo de cobertura "
-        f"{icone_ajuda('Detecta automaticamente os picos de publicação no período em questão e transforma cada um em um boletim — a matéria mais representativa daquele momento.')}",
+        f"### Sismógrafo de cobertura {icone_ajuda(texto_ajuda)}",
         unsafe_allow_html=True
     )
 
@@ -2803,10 +2806,11 @@ def renderizar_secao_sismografo(
 
         components.html(SISMOGRAFO_HTML, height=560, scrolling=False)
 
-        st.caption(
-            "Clique em qualquer marcador da linha para ver o boletim daquele pico de cobertura. "
-            "Barras em âmbar indicam o maior pico do período filtrado."
-        )
+        if mostrar_instrucoes:
+            st.caption(
+                "Clique em qualquer marcador da linha para ver o boletim daquele pico de cobertura. "
+                "Barras em âmbar indicam o maior pico do período filtrado."
+            )
 
     if mostrar_gauge_ritmo:
         renderizar_gauge_ritmo(
@@ -2979,11 +2983,23 @@ if secao_selecionada == "Cobertura do dia":
     st.divider()
 
     # =========================
-    # Parte 2: sismógrafo compacto — janela fixa de 30 dias terminando
-    # hoje, independente do filtro de período da sidebar (que fica
-    # escondido nesta seção — ver bloco "Período" na sidebar).
+    # Parte 2: sismógrafo compacto — janela recente ajustável pelo usuário,
+    # independente do filtro de período da sidebar. O controle permite até
+    # 183 dias (aproximadamente seis meses), mantendo a escala fixa em Dia.
     # =========================
-    janela_sismografo_dia = data_mais_recente_dt - pd.Timedelta(days=30) if pd.notna(data_mais_recente_dt) else None
+    dias_sismografo_home = st.slider(
+        "Dias exibidos no sismógrafo",
+        min_value=7,
+        max_value=183,
+        value=30,
+        step=1,
+        key="dias_sismografo_home"
+    )
+
+    janela_sismografo_dia = (
+        data_mais_recente_dt - pd.Timedelta(days=dias_sismografo_home)
+        if pd.notna(data_mais_recente_dt) else None
+    )
     df_janela_recente = (
         df_original[
             (df_original["date_dt"] > janela_sismografo_dia)
@@ -3001,11 +3017,12 @@ if secao_selecionada == "Cobertura do dia":
             mostrar_slider=False,
             n_eventos_fixo=6,
             mostrar_gauge_ritmo=False,
+            texto_ajuda="Detecta automaticamente picos de publicação",
+            mostrar_instrucoes=False,
         )
-        st.caption("Últimos 30 dias, até hoje — não depende do período selecionado na barra lateral.")
     else:
         st.info(
-            "Sem matérias suficientes nos últimos 30 dias, com o filtro de "
+            "Sem matérias suficientes no período escolhido, com o filtro de "
             "veículo atual, para montar o sismógrafo."
         )
 
@@ -3014,11 +3031,6 @@ if secao_selecionada == "Cobertura do dia":
     # =========================
     # Parte 3: classificação por IA — só das matérias de hoje.
     # =========================
-    st.markdown(
-        f"#### Enquadramento, temas e atores de hoje "
-        f"{icone_ajuda('Agregados a partir da classificação já feita por matéria, restrita ao dia mais recente do dataset — filtrar aqui não tem custo adicional de IA.')}",
-        unsafe_allow_html=True
-    )
     renderizar_bloco_classificacao(df_hoje_filtrado, "hoje")
 
 
